@@ -1,5 +1,6 @@
 import threading
 
+from pm_robot_dashboard import node
 import rclpy
 
 import PyQt6.QtWidgets as Q
@@ -8,7 +9,7 @@ from pm_robot_dashboard.node import PmJogToolNode
 from pm_robot_dashboard.nozzle import NozzleControlWidget
 from pm_robot_dashboard.pneumatic import PneumaticControlWidget
 from pm_robot_dashboard.joints import JointsControlWidget
-
+from pm_robot_dashboard.ik_control import IkControlWidget
 class PmJogToolUi(Q.QMainWindow):
     node: PmJogToolNode
 
@@ -17,9 +18,14 @@ class PmJogToolUi(Q.QMainWindow):
         self.node = node
 
         tabs = Q.QTabWidget(self)
+        ik_tab = IkControlWidget(node)
+        tabs.addTab(ik_tab, "IK Control")
         tabs.addTab(JointsControlWidget(self, node), "Joints")
         tabs.addTab(NozzleControlWidget(self, node), "Nozzles")
         tabs.addTab(PneumaticControlWidget(self, node), "Pneumatics")
+        
+        
+        
         self.setCentralWidget(tabs)
 
 
