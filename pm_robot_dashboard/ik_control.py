@@ -1,345 +1,218 @@
-# pm_robot_dashboard/ik_control.py
 
-from functools import partial
-import yaml
+import PyQt6.QtWidgets as Q
+from PyQt6.QtCore import Qt, QTimer
 
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QGridLayout, QLabel, QPushButton,
-    QComboBox, QLineEdit, QCheckBox, QHBoxLayout, QTableWidget, QTableWidgetItem
-)
-from PyQt6.QtCore import Qt
-
-import rclpy
-from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.duration import Duration
-from rclpy.time import Time
-
-from geometry_msgs.msg import Pose, Vector3
-from tf2_ros import Buffer, TransformListener
-from rosidl_runtime_py.convert import message_to_ordereddict
-
-# Optional service imports
-try:
-    from pm_moveit_interfaces.srv import MoveToPose
-    HAVE_MOVEIT_IF = True
-except Exception:
-    print("pm_moveit_interfaces not found, IK move functionality will be disabled.")
-    HAVE_MOVEIT_IF = False
-
-try:
-    from ros_sequential_action_programmer.submodules.action_classes.ServiceAction import ServiceAction
-    HAVE_SERVICE_ACTION = True
-except Exception:
-    print("ServiceAction helper not found, will use raw service client fallback.")
-    HAVE_SERVICE_ACTION = False
-
-
-class IkControlWidget(QWidget):
-    """
-    IK control tab for the PM robot dashboard.
-    - Shows current tool pose (mm)
-    - Lets you pick a target frame from TF
-    - Jog target position in mm (X/Y/Z)
-    - Move to target via pm_moveit_server services (meters on wire)
-    """
-
-    TOOLS = ["PM_Robot_Tool_TCP", "Cam1_Toolhead_TCP", "Laser_Toolhead_TCP"]
-    TOOL_SERVICE = {
-        "PM_Robot_Tool_TCP": "/pm_moveit_server/move_tool_to_pose",
-        "Cam1_Toolhead_TCP": "/pm_moveit_server/move_cam1_to_pose",
-        "Laser_Toolhead_TCP": "/pm_moveit_server/move_laser_to_pose",
-    }
-
-    BLACKLIST = set([
-        "world", "map", "odom", "base_link", "pm_robot_base_link",
-        "Camera_Top_View_Link", "Camera_Top_View_Link_Optical",
-        "Camera_Bottom_View_Link", "Camera_Bottom_View_Link_Optical",
-        "axis_base", "base_link_empthy", "housing", "housing_hr", "housing_hl",
-        "housing_vl", "housing_vr",
-    ])
-
-    JOG_STEPS = [-10.0, -1.0, -0.1, -0.01, -0.001, -0.0001,
-                  0.0001, 0.001, 0.01, 0.1, 1.0, 10.0]  # mm
-
-    def __init__(self, node):
-        super().__init__()
+from pm_robot_dashboard.node import PmJogToolNode
+from pm_robot_dashboard.ik_model import IkControlModel
+class IkControlWidget(Q.QWidget):
+    def __init__(self, parent: Q.QWidget, node: PmJogToolNode):
+        super().__init__(parent)
         self.node = node
-        self.logger = node.get_logger()
+        self.model = IkControlModel(node)
 
-        # State (all UI-facing positions are in mm)
-        self.active_tool = self.TOOLS[0]
-        self.current_pose = Pose()  # mm
-        self.target_pose = Pose()   # mm
-
-        # TF2
-        self.tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
-        self.tf_listener = TransformListener(self.tf_buffer, self.node, spin_thread=True)
-
-        # ROS timer group
-        self.cb_group = ReentrantCallbackGroup()
-
-        # --- Build UI FIRST ---
         self._build_ui()
-        # Initial TF/UI sync
-        self._refresh_frames()
-        self._set_target_to_current_tool_pose()
+        self._connect_signals()
 
-        # --- Start timer LAST (prevents early callback before widgets exist) ---
-        self.timer = self.node.create_timer(0.1, self._on_timer, callback_group=self.cb_group)
+        # GUI timer to poll model state and update widgets
+        self.gui_timer = QTimer(self)
+        self.gui_timer.timeout.connect(self._update_gui_from_model)
+        self.gui_timer.start(100)  
 
-        # Capability checks
-        if not HAVE_MOVEIT_IF:
-            self._warn("pm_moveit_interfaces not found: Move will be disabled.")
-            self.move_btn.setEnabled(False)
-        if not HAVE_SERVICE_ACTION:
-            self._warn("ServiceAction helper not found: will use raw service client fallback.")
-
-    # ---------- UI ----------
 
     def _build_ui(self):
-        layout = QVBoxLayout()
-        grid = QGridLayout()
+        main_layout = Q.QVBoxLayout(self)
 
-        # Active tool
-        grid.addWidget(QLabel("Active Tool"), 0, 0)
-        self.tool_combo = QComboBox()
-        self.tool_combo.addItems(self.TOOLS)
-        self.tool_combo.setCurrentText(self.active_tool)
-        self.tool_combo.currentTextChanged.connect(self._on_tool_changed)
-        grid.addWidget(self.tool_combo, 1, 0)
+        # Top row: active tool + target frame
+        top_row = Q.QHBoxLayout()
 
-        # Target frame
-        grid.addWidget(QLabel("Target Frame"), 0, 1)
-        self.frame_combo = QComboBox()
-        self.frame_combo.currentTextChanged.connect(self._on_target_frame_changed)
-        grid.addWidget(self.frame_combo, 1, 1)
+        tool_label = Q.QLabel("Active tool")
+        self.tool_combo = Q.QComboBox()
+        self.tool_combo.addItems(self.model.tools)
+        self.tool_combo.setCurrentText(self.model.get_active_tool())
 
-        # Current pose (read-only, mm)
-        grid.addWidget(
-            QLabel("Current Pose [mm] (X/Y/Z)"),
-            2, 0, 1, 2,
-            alignment=Qt.AlignmentFlag.AlignLeft
-        )
+        frame_label = Q.QLabel("Target frame")
+        self.frame_combo = Q.QComboBox()
 
-        self.cur_x = QLineEdit()
-        self.cur_y = QLineEdit()
-        self.cur_z = QLineEdit()
-        for w in (self.cur_x, self.cur_y, self.cur_z):
-            w.setReadOnly(True)
-            w.setFixedWidth(120)
+        top_row.addWidget(tool_label)
+        top_row.addWidget(self.tool_combo)
+        top_row.addSpacing(20)
+        top_row.addWidget(frame_label)
+        top_row.addWidget(self.frame_combo)
 
-        cur_row = QHBoxLayout()
-        cur_row.addWidget(self.cur_x)
-        cur_row.addWidget(self.cur_y)
-        cur_row.addWidget(self.cur_z)
+        main_layout.addLayout(top_row)
 
-        layout.addLayout(grid)
-        layout.addLayout(cur_row)
+        # Current pose display
+        current_group = Q.QGroupBox("Current pose [mm]")
+        cg_layout = Q.QHBoxLayout()
+        self.cur_x = Q.QLineEdit(); self.cur_x.setReadOnly(True); self.cur_x.setFixedWidth(100)
+        self.cur_y = Q.QLineEdit(); self.cur_y.setReadOnly(True); self.cur_y.setFixedWidth(100)
+        self.cur_z = Q.QLineEdit(); self.cur_z.setReadOnly(True); self.cur_z.setFixedWidth(100)
+        cg_layout.addWidget(Q.QLabel("X:")); cg_layout.addWidget(self.cur_x)
+        cg_layout.addWidget(Q.QLabel("Y:")); cg_layout.addWidget(self.cur_y)
+        cg_layout.addWidget(Q.QLabel("Z:")); cg_layout.addWidget(self.cur_z)
+        current_group.setLayout(cg_layout)
+        main_layout.addWidget(current_group)
 
-        # Target pose (read-only, mm)
-        layout.addWidget(QLabel("Target Pose [mm] (X/Y/Z)"))
-        self.tgt_x = QLineEdit()
-        self.tgt_y = QLineEdit()
-        self.tgt_z = QLineEdit()
-        for w in (self.tgt_x, self.tgt_y, self.tgt_z):
-            w.setReadOnly(True)
-            w.setFixedWidth(120)
+        # Target pose display
+        target_group = Q.QGroupBox("Target pose [mm] + orientation [quat]")
+        tg_layout = Q.QHBoxLayout()
+        self.tgt_x = Q.QLineEdit(); self.tgt_x.setReadOnly(True); self.tgt_x.setFixedWidth(100)
+        self.tgt_y = Q.QLineEdit(); self.tgt_y.setReadOnly(True); self.tgt_y.setFixedWidth(100)
+        self.tgt_z = Q.QLineEdit(); self.tgt_z.setReadOnly(True); self.tgt_z.setFixedWidth(100)
+        self.tgt_ow = Q.QLineEdit(); self.tgt_ow.setReadOnly(True); self.tgt_ow.setFixedWidth(80)
+        self.tgt_ox = Q.QLineEdit(); self.tgt_ox.setReadOnly(True); self.tgt_ox.setFixedWidth(80)
+        self.tgt_oy = Q.QLineEdit(); self.tgt_oy.setReadOnly(True); self.tgt_oy.setFixedWidth(80)
+        self.tgt_oz = Q.QLineEdit(); self.tgt_oz.setReadOnly(True); self.tgt_oz.setFixedWidth(80)
 
-        tgt_row = QHBoxLayout()
-        tgt_row.addWidget(self.tgt_x)
-        tgt_row.addWidget(self.tgt_y)
-        tgt_row.addWidget(self.tgt_z)
-        layout.addLayout(tgt_row)
+        tg_layout.addWidget(Q.QLabel("X:")); tg_layout.addWidget(self.tgt_x)
+        tg_layout.addWidget(Q.QLabel("Y:")); tg_layout.addWidget(self.tgt_y)
+        tg_layout.addWidget(Q.QLabel("Z:")); tg_layout.addWidget(self.tgt_z)
+        tg_layout.addWidget(Q.QLabel("qw:")); tg_layout.addWidget(self.tgt_ow)
+        tg_layout.addWidget(Q.QLabel("qx:")); tg_layout.addWidget(self.tgt_ox)
+        tg_layout.addWidget(Q.QLabel("qy:")); tg_layout.addWidget(self.tgt_oy)
+        tg_layout.addWidget(Q.QLabel("qz:")); tg_layout.addWidget(self.tgt_oz)
 
-        # Jog buttons for X/Y/Z in mm
-        layout.addWidget(QLabel("Jog Target (mm):"))
-        for axis, coord in (("X", "x"), ("Y", "y"), ("Z", "z")):
-            row = QHBoxLayout()
-            row.addWidget(QLabel(f"{axis}:"))
-            for step in self.JOG_STEPS:
-                btn = QPushButton(f"{step:g}")
-                btn.setFixedWidth(70)
-                btn.clicked.connect(partial(self._jog_target_mm, coord, step))
+        target_group.setLayout(tg_layout)
+        main_layout.addWidget(target_group)
+
+        # Jog controls (X/Y/Z)
+        jog_group = Q.QGroupBox("Add to target pose [mm]")
+        jg_layout = Q.QVBoxLayout()
+        translation_list = [-10.0,-1.0,-0.1,-0.01,-0.001,-0.0001, 0.0001,0.001,0.01,0.1,1.0,10.0]
+
+        self.jog_buttons = []  # keep refs if you want
+
+        for axis in ['x', 'y', 'z']:
+            row = Q.QHBoxLayout()
+            row.addWidget(Q.QLabel(f"{axis.upper()}"))
+            for step in translation_list:
+                btn = Q.QPushButton(str(step))
+                btn.setFixedWidth(60)
+               
+                btn._axis = axis
+                btn._step = step
+                self.jog_buttons.append(btn)
                 row.addWidget(btn)
-            layout.addLayout(row)
+            jg_layout.addLayout(row)
 
-        # Controls
-        ctrl_row = QHBoxLayout()
-        self.auto_chk = QCheckBox("Auto Move")
-        set_tgt_btn = QPushButton("Set Target = Current")
-        set_tgt_btn.clicked.connect(self._set_target_to_current_tool_pose)
-        self.move_btn = QPushButton("Move to Target")
-        self.move_btn.clicked.connect(self._move_to_target)
-        ctrl_row.addWidget(self.auto_chk)
-        ctrl_row.addWidget(set_tgt_btn)
-        ctrl_row.addWidget(self.move_btn)
-        layout.addLayout(ctrl_row)
+        jog_group.setLayout(jg_layout)
+        main_layout.addWidget(jog_group)
 
-        # Joint table placeholder (optional)
-        self.table = QTableWidget()
-        self.table.setMinimumWidth(420)
-        self.table.setMinimumHeight(320)
-        layout.addWidget(self.table)
+        # Buttons
+        btn_row = Q.QHBoxLayout()
+        self.btn_set_tgt_from_cur = Q.QPushButton("Set target = current")
+        self.btn_move = Q.QPushButton("Move to target")
+        self.chk_automove = Q.QCheckBox("Auto move on jog")
+        btn_row.addWidget(self.btn_set_tgt_from_cur)
+        btn_row.addWidget(self.btn_move)
+        btn_row.addWidget(self.chk_automove)
+        main_layout.addLayout(btn_row)
 
-        self.setLayout(layout)
+        # Joint state table
+        self.joint_table = Q.QTableWidget()
+        self.joint_table.setMinimumWidth(350)
+        main_layout.addWidget(self.joint_table)
 
-    # ---------- Helpers ----------
+        # Simple log output
+        self.log_widget = Q.QPlainTextEdit()
+        self.log_widget.setReadOnly(True)
+        self.log_widget.setMaximumHeight(120)
+        main_layout.addWidget(self.log_widget)
 
-    def _warn(self, msg: str):
-        self.logger.warn(msg)
+        self.setLayout(main_layout)
 
-    def _info(self, msg: str):
-        self.logger.info(msg)
 
-    def _update_pose_fields(self):
-        # Guard against early timer (shouldn’t happen with correct order, but safe)
-        if not hasattr(self, "cur_x"):
-            return
-        self.cur_x.setText(f"{self.current_pose.position.x:.6f}")
-        self.cur_y.setText(f"{self.current_pose.position.y:.6f}")
-        self.cur_z.setText(f"{self.current_pose.position.z:.6f}")
+    def _connect_signals(self):
+        self.tool_combo.currentTextChanged.connect(self._on_tool_changed)
+        self.frame_combo.currentTextChanged.connect(self._on_frame_changed)
+        self.btn_set_tgt_from_cur.clicked.connect(self._on_set_target_from_current)
+        self.btn_move.clicked.connect(self._on_move_clicked)
+        for btn in self.jog_buttons:
+            btn.clicked.connect(lambda checked, b=btn: self._on_jog_clicked(b))
 
-        self.tgt_x.setText(f"{self.target_pose.position.x:.6f}")
-        self.tgt_y.setText(f"{self.target_pose.position.y:.6f}")
-        self.tgt_z.setText(f"{self.target_pose.position.z:.6f}")
 
-    def _refresh_frames(self):
-        try:
-            yaml_text = self.tf_buffer.all_frames_as_yaml()
-            frames_dict = yaml.safe_load(yaml_text) or {}
-            frames = [f for f in frames_dict.keys() if f not in self.BLACKLIST]
-            frames.sort()
-            self.frame_combo.blockSignals(True)
-            self.frame_combo.clear()
-            self.frame_combo.addItems(frames)
-            self.frame_combo.blockSignals(False)
-        except Exception as e:
-            # It’s normal to see exceptions early if TF isn’t ready yet
-            self.logger.debug(f"TF frames not ready: {e}")
+    def _on_tool_changed(self, tool: str):
+        self.model.set_active_tool(tool)
+        self.model.update_current_pose_from_active_tool()
+        self._update_gui_from_model()
 
-    def _mm_to_m(self, x_mm: float) -> float:
-        return x_mm / 1000.0
-
-    def _lookup_tool_pose_mm(self) -> Pose:
-        pose = Pose()
-        try:
-            tf = self.tf_buffer.lookup_transform(
-                "world", self.active_tool, Time(), timeout=Duration(seconds=0.5)
-            )
-            pose.position.x = tf.transform.translation.x * 1000.0
-            pose.position.y = tf.transform.translation.y * 1000.0
-            pose.position.z = tf.transform.translation.z * 1000.0
-            pose.orientation = tf.transform.rotation
-        except Exception as e:
-            self.logger.debug(f"lookup tool pose failed: {e}")
-        return pose
-
-    def _set_target_to_current_tool_pose(self):
-        self.current_pose = self._lookup_tool_pose_mm()
-        self.target_pose.position.x = self.current_pose.position.x
-        self.target_pose.position.y = self.current_pose.position.y
-        self.target_pose.position.z = self.current_pose.position.z
-        self.target_pose.orientation = self.current_pose.orientation
-        self._update_pose_fields()
-
-    def _set_target_from_frame(self, frame: str):
+    def _on_frame_changed(self, frame: str):
         if not frame:
             return
-        try:
-            tf = self.tf_buffer.lookup_transform(
-                "world", frame, Time(), timeout=Duration(seconds=0.5)
-            )
-            self.target_pose.position.x = tf.transform.translation.x * 1000.0
-            self.target_pose.position.y = tf.transform.translation.y * 1000.0
-            self.target_pose.position.z = tf.transform.translation.z * 1000.0
-            self.target_pose.orientation = tf.transform.rotation
-            self._update_pose_fields()
-        except Exception as e:
-            self.logger.warn(f"Failed to set target from frame '{frame}': {e}")
+        self.model.set_target_from_frame(frame)
+        self._update_gui_from_model()
 
-    # ---------- Slots ----------
+    def _on_set_target_from_current(self):
+        self.model.copy_current_to_target()
+        self._update_gui_from_model()
 
-    def _on_tool_changed(self, text: str):
-        self.active_tool = text
-        self._info(f"Active tool = {text}")
-        self._set_target_to_current_tool_pose()
-
-    def _on_target_frame_changed(self, text: str):
-        self._set_target_from_frame(text)
-
-    def _jog_target_mm(self, coord: str, delta_mm: float):
-        if coord == "x":
-            self.target_pose.position.x += delta_mm
-        elif coord == "y":
-            self.target_pose.position.y += delta_mm
-        else:
-            self.target_pose.position.z += delta_mm
-
-        self._update_pose_fields()
-
-        if self.auto_chk.isChecked():
-            self._move_to_target()
-
-    def _move_to_target(self):
-        if not HAVE_MOVEIT_IF:
-            self._warn("Move disabled: pm_moveit_interfaces not available.")
-            return
-
-        service_name = self.TOOL_SERVICE.get(self.active_tool)
-        if not service_name:
-            self._warn(f"No service configured for tool '{self.active_tool}'.")
-            return
-
-        req = MoveToPose.Request()
-        # convert mm -> m
-        req.move_to_pose.position.x = self._mm_to_m(self.target_pose.position.x)
-        req.move_to_pose.position.y = self._mm_to_m(self.target_pose.position.y)
-        req.move_to_pose.position.z = self._mm_to_m(self.target_pose.position.z)
-        req.move_to_pose.orientation = self.target_pose.orientation
-        req.execute_movement = True
-
-        success = False
-        try:
-            if HAVE_SERVICE_ACTION:
-                sa = ServiceAction(self.node, service_name, "pm_moveit_interfaces/srv/MoveToPose")
-                sa.set_service_bool_identifier("success")
-                sa.set_req_message_from_dict(message_to_ordereddict(req))
-                success = sa.execute()
-            else:
-                client = self.node.create_client(MoveToPose, service_name)
-                if not client.wait_for_service(timeout_sec=2.0):
-                    self._warn(f"Service {service_name} not available.")
-                    return
-                future = client.call_async(req)
-                rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
-                if future.result() is not None:
-                    success = bool(getattr(future.result(), "success", False))
-        except Exception as e:
-            self._warn(f"Move call failed: {e}")
-            success = False
-
+    def _on_move_clicked(self):
+        success = self.model.move_to_target()
         if success:
-            self._info(f"Move to target via {service_name}: success")
+            self._log("Move successful")
         else:
-            self._warn(f"Move to target via {service_name}: FAILED")
+            self._log("Move failed")
 
-    # ---------- Timer ----------
+    def _on_jog_clicked(self, btn: Q.QPushButton):
+        axis = btn._axis  # 'x', 'y', 'z'
+        step = btn._step
+        vec = self.model.rel_movement
+        if axis == 'x':
+            vec.x += step
+        elif axis == 'y':
+            vec.y += step
+        elif axis == 'z':
+            vec.z += step
 
-    def _on_timer(self):
-        if not hasattr(self, "cur_x"):
+        # If automove: send immediately
+        if self.chk_automove.isChecked():
+            self._log(f"Add {step} mm to {axis} (auto-move)")
+            self.model.move_to_target()
+        else:
+            self._log(f"Add {step} mm to {axis}")
+
+
+    def _update_gui_from_model(self):
+        m = self.model
+
+        # update frames if changed
+        if m.frame_added:
+            self.frame_combo.clear()
+            self.frame_combo.addItems(m.available_frames)
+            m.frame_added = False
+
+        # current pose
+        self.cur_x.setText(f"{m.current_pose.position.x:.6f}")
+        self.cur_y.setText(f"{m.current_pose.position.y:.6f}")
+        self.cur_z.setText(f"{m.current_pose.position.z:.6f}")
+
+        # target pose
+        self.tgt_x.setText(f"{m.target_pose.position.x:.6f}")
+        self.tgt_y.setText(f"{m.target_pose.position.y:.6f}")
+        self.tgt_z.setText(f"{m.target_pose.position.z:.6f}")
+        self.tgt_ow.setText(f"{m.target_pose.orientation.w:.6f}")
+        self.tgt_ox.setText(f"{m.target_pose.orientation.x:.6f}")
+        self.tgt_oy.setText(f"{m.target_pose.orientation.y:.6f}")
+        self.tgt_oz.setText(f"{m.target_pose.orientation.z:.6f}")
+
+        # joint table
+        self._update_joint_table()
+
+    def _update_joint_table(self):
+        m = self.model
+        if not m.joint_state_list:
             return
-        self.current_pose = self._lookup_tool_pose_mm()
-        self._update_pose_fields()
-        self._refresh_frames()
 
-    # Example: call with a list of (name, position) to fill the joint table
-    def populate_joint_table(self, joint_state_list):
-        if not joint_state_list:
-            return
-        column_names = ["Name", "Position [m]"]
-        self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(column_names)
-        self.table.setRowCount(len(joint_state_list))
-        for r, (name, pos) in enumerate(joint_state_list):
-            self.table.setItem(r, 0, QTableWidgetItem(str(name)))
-            self.table.setItem(r, 1, QTableWidgetItem(f"{float(pos):.9f}"))
+        # show only name + position
+        self.joint_table.setColumnCount(2)
+        self.joint_table.setHorizontalHeaderLabels(["Name", "Position [rad]"])
+        self.joint_table.setRowCount(len(m.joint_state_list))
+
+        for row, (name, pos, vel, eff) in enumerate(m.joint_state_list):
+            self.joint_table.setItem(row, 0, Q.QTableWidgetItem(str(name)))
+            self.joint_table.setItem(row, 1, Q.QTableWidgetItem(f"{pos:.6f}"))
+
+        self.joint_table.resizeColumnsToContents()
+
+    def _log(self, text: str):
+        self.log_widget.appendPlainText(text)
