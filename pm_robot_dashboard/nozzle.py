@@ -1,3 +1,4 @@
+import threading
 from functools import partial
 from typing import Awaitable
 
@@ -32,6 +33,7 @@ class NozzleControlWidget(Q.QScrollArea):
         main_layout.addWidget(get_states_button)
 
         title_font = QFont("Arial", 16, QFont.Weight.Bold)
+
         for nozzle in self.node.config.nozzles:
             nozzle = clean_topic_name(nozzle)
 
@@ -61,7 +63,9 @@ class NozzleControlWidget(Q.QScrollArea):
         main_layout.addStretch()
         self.setLayout(main_layout)
 
-        self.get_positions()
+        # Run get_positions in a separate thread to avoid blocking
+        thread = threading.Thread(target=self.get_positions, daemon=True)
+        thread.start()
 
     def get_positions(self):
         for nozzle in self.node.config.nozzles:

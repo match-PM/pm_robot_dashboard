@@ -10,6 +10,10 @@ setup(
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/launch", ["launch/app.launch.py"]),
+        ('share/' + package_name, ['pm_robot_dashboard/documentation/images/app_icon.png']),
+        ('share/' + package_name, ['pm_robot_dashboard/documentation/images/match_Logo_cut.png']),
+        ('share/' + package_name, ['pm_robot_dashboard/documentation/images/match_Logo.png']),
+
     ],
     install_requires=["setuptools"],
     zip_safe=True,

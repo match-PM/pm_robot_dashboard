@@ -29,6 +29,7 @@ class JointJogControl():
         self.target_joint_values = [0.0] * len(joint_names)
         self.joint_state_list = [0.0] * len(joint_names)
         self.joint_limits = limits
+        self.is_available = False  # Track if controller is properly initialized
 
         callback_group = MutuallyExclusiveCallbackGroup()
         self.joint_topic = joint_topic
@@ -37,10 +38,16 @@ class JointJogControl():
         self.topic_sub = self.node.create_subscription(JointState, self.joint_topic, self.joint_state_callback, 10, callback_group = callback_group)
 
         self._action_client = ActionClient(self.node, FollowJointTrajectory, self._action_name, callback_group=callback_group)
-        self._action_client.wait_for_server()
-        self.subscription_running = False
-
-        self.timer = self.node.create_timer(0.1, self.check_available)
+        
+        # Try to connect to action server with a timeout
+        if self._action_client.wait_for_server(timeout_sec=2.0):
+            self.is_available = True
+            self.subscription_running = False
+            self.timer = self.node.create_timer(0.1, self.check_available)
+        else:
+            self.node.get_logger().warn(f"Action server '{self._action_name}' not available. Controller '{joint_names}' will be skipped.")
+            self.subscription_running = False
+            # Don't create timer if server is not available
 
     def check_available(self):
         if self.subscription_running:
@@ -121,6 +128,10 @@ class JointJogControl():
         return self.joint_state_list
 
     def send_target_joint_values(self):
+        if not self.is_available:
+            self.node.get_logger().error(f"Cannot send command: Action server '{self._action_name}' is not available")
+            return
+        
         trajectory_msg = JointTrajectory()
         trajectory_msg.joint_names = self.joint_names
         point = JointTrajectoryPoint()

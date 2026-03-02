@@ -10,23 +10,12 @@ from sensor_msgs.msg import JointState
 from geometry_msgs.msg import Pose, Vector3
 
 from tf2_ros import Buffer, TransformListener
+from rosidl_runtime_py.convert import message_to_ordereddict
 
-
-try:
-    from pm_moveit_interfaces.srv import MoveToPose
-except ImportError:
-    print("pm_moveit_interfaces.srv  not found, cannot use MoveToPose service.")
-
-try: 
-    
-    from ros_sequential_action_programmer.submodules.action_classes.ServiceAction import ServiceAction
-
-except ImportError:
-    print("ServiceAction helper not found, will use raw service client fallback.")
-try: 
-    from rosidl_runtime_py.convert import message_to_ordereddict
-except ImportError:
-    print("rosidl_runtime_py.convert.message_to_ordereddict not found, cannot convert messages to dicts.")
+from pm_moveit_interfaces.srv import MoveToPose
+from ros_sequential_action_programmer.submodules.action_classes.ServiceAction import ServiceAction
+import yaml
+import threading
 
 
 def rgetattr(obj, attr, *args):
@@ -94,17 +83,19 @@ class IkControlModel:
         self.joint_state_msg_received = False
         self.joint_state_list = []  # list of (name, pos, vel, effort)
 
-        self.joint_state_sub = node.create_subscription(
-            JointState,
-            '/joint_states',
-            self._joint_state_callback,
-            10,
-            callback_group=self.callback_group,
-        )
+        # This is acctually not needed.
+        # self.joint_state_sub = node.create_subscription(
+        #     JointState,
+        #     '/joint_states',
+        #     self._joint_state_callback,
+        #     10,
+        #     callback_group=self.callback_group,
+        # )
 
-        self.update_timer = node.create_timer(
-            0.1, self._update_target, callback_group=self.callback_group
-        )
+        # This has to be done...
+        # self.update_timer = node.create_timer(
+        #     0.1, self._update_target, callback_group=self.callback_group
+        # )
 
     ######  getters/setters 
 
@@ -125,15 +116,26 @@ class IkControlModel:
             return
 
         try:
+            # Try with current node time first
             tf = self.tf_buffer.lookup_transform(
                 "world",
                 frame,
-                rclpy.time.Time(),
+                self.node.get_clock().now(),
                 timeout=rclpy.duration.Duration(seconds=1.0),
             )
         except Exception as e:
-            print(f"[IkControlModel] Failed to lookup TF world->{frame}: {e}")
-            return
+            # If that fails (e.g., extrapolation error), try with a slightly older time
+            try:
+                older_time = self.node.get_clock().now() - rclpy.duration.Duration(seconds=0.5)
+                tf = self.tf_buffer.lookup_transform(
+                    "world",
+                    frame,
+                    older_time,
+                    timeout=rclpy.duration.Duration(seconds=1.0),
+                )
+            except Exception as e2:
+                self.logger.error(f"[IkControlModel] Failed to lookup TF world->{frame}: {e2}")
+                return
 
         self.target_pose.position.x = tf.transform.translation.x * 1000.0
         self.target_pose.position.y = tf.transform.translation.y * 1000.0
@@ -142,16 +144,28 @@ class IkControlModel:
 
     def update_current_pose_from_active_tool(self):
         tool = self.get_active_tool()
+
         try:
+            # Try with current node time first
             tf = self.tf_buffer.lookup_transform(
                 "world",
                 tool,
-                rclpy.time.Time(),
+                self.node.get_clock().now(),
                 timeout=rclpy.duration.Duration(seconds=1.0),
             )
         except Exception as e:
-            print(f"[IkControlModel] Failed to lookup TF world->{tool}: {e}")
-            return
+            # If that fails (e.g., extrapolation error), try with a slightly older time
+            try:
+                older_time = self.node.get_clock().now() - rclpy.duration.Duration(seconds=0.5)
+                tf = self.tf_buffer.lookup_transform(
+                    "world",
+                    tool,
+                    older_time,
+                    timeout=rclpy.duration.Duration(seconds=1.0),
+                )
+            except Exception as e2:
+                self.logger.error(f"[IkControlModel] Failed to lookup TF world->{tool}: {e2}")
+                return
 
         self.current_pose.position.x = tf.transform.translation.x * 1000.0
         self.current_pose.position.y = tf.transform.translation.y * 1000.0
@@ -166,8 +180,8 @@ class IkControlModel:
 
 
     def _update_target(self):
-        if not self.joint_state_msg_received:
-            return
+        # if not self.joint_state_msg_received:
+        #     return
 
         self.update_current_pose_from_active_tool()
 
@@ -179,10 +193,12 @@ class IkControlModel:
         self.rel_movement.y = 0.0
         self.rel_movement.z = 0.0
 
+        # Run frame list update in a background thread to avoid blocking the UI
         self._update_frame_list()
 
+        #threading.Thread(target=self._update_frame_list, daemon=True).start()
+
     def _update_frame_list(self):
-        import yaml
 
         try:
             frame_dict = yaml.safe_load(self.tf_buffer.all_frames_as_yaml())
@@ -221,7 +237,7 @@ class IkControlModel:
             client=client_name,
             service_type='pm_moveit_interfaces/srv/MoveToPose',
         )
-        service_action.set_service_bool_identifier('success')
+        service_action.set_success_identifier('success')
 
         req = MoveToPose.Request()
         req.move_to_pose.position.x = self.target_pose.position.x / 1000.0
@@ -230,7 +246,7 @@ class IkControlModel:
         req.execute_movement = True
 
         req_dict = message_to_ordereddict(req)
-        service_action.set_req_message_from_dict(req_dict)
+        service_action.set_request_from_dict(req_dict)
 
         success = service_action.execute()
         self.logger.info(f"Result of {tool}: {success}")

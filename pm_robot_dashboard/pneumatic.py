@@ -1,3 +1,4 @@
+import threading
 from functools import partial
 from typing import Awaitable
 
@@ -42,7 +43,7 @@ class PneumaticControlWidget(Q.QScrollArea):
             group_title.setFont(title_font)
             group_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
             group_layout.addWidget(group_title)
-
+            
             buttons = OneOfManyButton(["Backward", "Forward"])
             buttons.changed.connect(partial(self.handle_click, pneumatic))
             group_layout.addWidget(buttons)
@@ -60,7 +61,9 @@ class PneumaticControlWidget(Q.QScrollArea):
         main_layout.addStretch()
         self.setLayout(main_layout)
 
-        self.get_positions()
+        # Run get_positions in a separate thread to avoid blocking
+        thread = threading.Thread(target=self.get_positions, daemon=True)
+        thread.start()
 
     def get_positions(self):
         for pneumatic in self.node.config.pneumatics:

@@ -109,9 +109,9 @@ class IkControlWidget(Q.QWidget):
         main_layout.addLayout(btn_row)
 
         # Joint state table
-        self.joint_table = Q.QTableWidget()
-        self.joint_table.setMinimumWidth(350)
-        main_layout.addWidget(self.joint_table)
+        # self.joint_table = Q.QTableWidget()
+        # self.joint_table.setMinimumWidth(350)
+        # main_layout.addWidget(self.joint_table)
 
         # Simple log output
         self.log_widget = Q.QPlainTextEdit()
@@ -196,7 +196,7 @@ class IkControlWidget(Q.QWidget):
         self.tgt_oz.setText(f"{m.target_pose.orientation.z:.6f}")
 
         # joint table
-        self._update_joint_table()
+        #self._update_joint_table()
 
     def _update_joint_table(self):
         m = self.model
