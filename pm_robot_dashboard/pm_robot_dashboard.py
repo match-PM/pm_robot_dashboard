@@ -13,6 +13,8 @@ from pm_robot_dashboard.pneumatic import PneumaticControlWidget
 from pm_robot_dashboard.joints import JointsControlWidget
 from pm_robot_dashboard.ik_control import IkControlWidget
 from pm_robot_dashboard.pm_robot_config import PmRobotConfigWidget
+from pm_robot_dashboard.launch_control import LaunchControlWidget
+from pm_robot_dashboard.pm_robot_tool_changer import ToolChangerService
 from rclpy.executors import MultiThreadedExecutor
 
 try:
@@ -67,6 +69,7 @@ class PmJogToolUi(Q.QMainWindow):
         robot_control_tabs.addTab(PneumaticControlWidget(self, node), "Pneumatics")
         #robot_control_tabs.addTab(IkControlWidget(self, node), "IK")
         robot_control_tabs.addTab(PmRobotConfigWidget(node), "Robot Config")
+        robot_control_tabs.addTab(LaunchControlWidget(node, self), "Launch Files")
 
         main_tabs.addTab(robot_control_tabs, "Robot Control")
 
@@ -108,6 +111,7 @@ class PmJogToolApp:
     def __init__(self):
         self.app = Q.QApplication([])
         self.node = PmJogToolNode()
+        ToolChangerService(self.node, self.node.pm_robot_utils)
 
         self.executor = MultiThreadedExecutor(num_threads=6)
         self.executor.add_node(self.node)

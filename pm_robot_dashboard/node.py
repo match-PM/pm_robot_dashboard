@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from rclpy.node import Node
 
 from ament_index_python.packages import get_package_share_directory
+from pm_skills.py_modules.PmRobotUtils import PmRobotUtils
 
 @dataclass
 class Configuration:
@@ -28,6 +29,8 @@ class PmJogToolNode(Node):
         self.get_logger().info("Found the following pneumatic controllers:")
         for pneumatic in self.config.pneumatics:
             self.get_logger().info(f"- {pneumatic}")
+
+        self.pm_robot_utils = PmRobotUtils(self)
 
 
     def load_config(self) -> Configuration:

@@ -8,7 +8,7 @@ def generate_launch_description():
         executable="pm_robot_dashboard",
         name="pm_robot_dashboard",
         emulate_tty=True,
-        parameters=[{'use_sim_time': True}]
+        parameters=[{'use_sim_time': False}]
     )
 
     ld = LaunchDescription()

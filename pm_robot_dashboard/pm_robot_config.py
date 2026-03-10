@@ -21,8 +21,11 @@ class PmRobotConfigWidget(QWidget):
     def __init__(self, ros_node:Node ):
         super().__init__()
         self.node = ros_node
-        #self.pm_robot_config = PmRobotConfig()
-        self._pm_robot_utills = PmRobotUtils(ros_node)
+        # Reuse the PmRobotUtils already attached to the node (avoids a second instance)
+        if hasattr(ros_node, 'pm_robot_utils'):
+            self._pm_robot_utills = ros_node.pm_robot_utils
+        else:
+            self._pm_robot_utills = PmRobotUtils(ros_node)
         self.pm_robot_config = self._pm_robot_utills.pm_robot_config
         self.init_ui()
         
