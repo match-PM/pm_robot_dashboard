@@ -232,18 +232,19 @@ class ToolChangerService:
         req = EmptyWithSuccess.Request()
         try:
             future = self._configure_unity_client.call_async(req)
-            # Spin briefly so the response arrives inside this callback context
-            import rclpy
-            rclpy.spin_until_future_complete(self._node, future, timeout_sec=5.0)
-            if future.done():
-                resp: EmptyWithSuccess.Response = future.result()
-                if resp.success:
-                    self._node.get_logger().info("Unity scene reconfigured successfully.")
-                else:
-                    self._node.get_logger().warn(
-                        f"Unity configure_robot returned success=False: {getattr(resp, 'message', '')}"
-                    )
-            else:
-                self._node.get_logger().warn("Unity configure_robot call timed out.")
+
+            def _done_cb(f):
+                try:
+                    resp: EmptyWithSuccess.Response = f.result()
+                    if resp.success:
+                        self._node.get_logger().info("Unity scene reconfigured successfully.")
+                    else:
+                        self._node.get_logger().warn(
+                            f"Unity configure_robot returned success=False: {getattr(resp, 'message', '')}"
+                        )
+                except Exception as exc:
+                    self._node.get_logger().error(f"Unity configure_robot call failed: {exc}")
+
+            future.add_done_callback(_done_cb)
         except Exception as exc:
             self._node.get_logger().error(f"Error calling Unity configure_robot: {exc}")
