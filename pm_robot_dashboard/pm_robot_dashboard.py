@@ -16,7 +16,7 @@ from pm_robot_dashboard.pm_robot_config import PmRobotConfigWidget
 from pm_robot_dashboard.launch_control import LaunchControlWidget
 from pm_robot_dashboard.pm_robot_tool_changer import ToolChangerService
 from rclpy.executors import MultiThreadedExecutor
-
+from pm_robot_modules.submodules.pm_dispense_path_generator_app import DispenserBuilderWidget
 try:
     from assembly_scene_viewer.py_modules.AssemblySceneViewer import AssemblyScenceViewerWidget
     from assembly_scene_viewer.py_modules.AssemblyJsonModifier import AssemblyModifierWidget
@@ -61,7 +61,7 @@ class PmJogToolUi(Q.QMainWindow):
 
         # Create main tab widget
         main_tabs = Q.QTabWidget(self)
-
+        
         # Create Robot Control tab with subtabs
         robot_control_tabs = Q.QTabWidget()
         robot_control_tabs.addTab(JointsControlWidget(self, node), "Joints")
@@ -70,6 +70,7 @@ class PmJogToolUi(Q.QMainWindow):
         #robot_control_tabs.addTab(IkControlWidget(self, node), "IK")
         robot_control_tabs.addTab(PmRobotConfigWidget(node), "Robot Config")
         robot_control_tabs.addTab(LaunchControlWidget(node, self), "Launch Files")
+        robot_control_tabs.addTab(DispenserBuilderWidget(), "2K Dispenser Path Builder")
 
         main_tabs.addTab(robot_control_tabs, "Robot Control")
 
