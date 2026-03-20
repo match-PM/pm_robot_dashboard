@@ -15,6 +15,7 @@ from pm_robot_dashboard.ik_control import IkControlWidget
 from pm_robot_dashboard.pm_robot_config import PmRobotConfigWidget
 from pm_robot_dashboard.launch_control import LaunchControlWidget
 from pm_robot_dashboard.pm_robot_tool_changer import ToolChangerService
+from pm_robot_dashboard.calibration_panel import GraphView
 from rclpy.executors import MultiThreadedExecutor
 from pm_robot_modules.submodules.pm_dispense_path_generator_app import DispenserBuilderWidget
 try:
@@ -71,6 +72,7 @@ class PmJogToolUi(Q.QMainWindow):
         robot_control_tabs.addTab(PmRobotConfigWidget(node), "Robot Config")
         robot_control_tabs.addTab(LaunchControlWidget(node, self), "Launch Files")
         robot_control_tabs.addTab(DispenserBuilderWidget(), "2K Dispenser Path Builder")
+        robot_control_tabs.addTab(GraphView(), "Calibration")
 
         main_tabs.addTab(robot_control_tabs, "Robot Control")
 
