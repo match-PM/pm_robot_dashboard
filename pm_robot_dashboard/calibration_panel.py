@@ -158,14 +158,19 @@ class Arrow(QGraphicsRectItem):
         start_rect = self.start.sceneBoundingRect()
         end_rect = self.end.sceneBoundingRect()
         
-        # If start is above end, connect bottom-to-top (normal flow)
-        # If start is below end, connect top-to-bottom (reverse flow)
-        if start_rect.center().y() < end_rect.center().y():
-            # Normal: top nodes to bottom nodes
+        # Determine connection points based on relative positions
+        # If nodes are at approximately the same level, connect bottom-to-bottom
+        y_diff = abs(start_rect.center().y() - end_rect.center().y())
+        if y_diff < 20:  # Same level (within 20 pixels)
+            # Both at same level: go out bottom and come in bottom
+            p1 = self.start.get_bottom_connection_point(self.start_index, self.start_total)
+            p2 = self.end.get_bottom_connection_point(self.end_index, self.end_total)
+        elif start_rect.center().y() < end_rect.center().y():
+            # Normal: start above end - connect bottom-to-top
             p1 = self.start.get_bottom_connection_point(self.start_index, self.start_total)
             p2 = self.end.get_top_connection_point(self.end_index, self.end_total)
         else:
-            # Reverse: bottom nodes to top nodes
+            # Reverse: start below end - connect top-to-bottom
             p1 = self.start.get_top_connection_point(self.start_index, self.start_total)
             p2 = self.end.get_bottom_connection_point(self.end_index, self.end_total)
 
@@ -187,7 +192,18 @@ class Arrow(QGraphicsRectItem):
         self._draw_arrow_head(painter, path[-2], path[-1])
 
         if self.label:
-            label_pos = QPointF((path[1].x() + path[2].x()) / 2, mid_y - 5)
+            # Position label at a fixed distance from the node box
+            label_x = path[1].x() + 5
+            
+            # Determine if vertical segment goes down or up
+            if path[1].y() > path[0].y():
+                # Vertical segment goes downward
+                label_y = path[0].y() + 15
+            else:
+                # Vertical segment goes upward
+                label_y = path[0].y() - 15
+            
+            label_pos = QPointF(label_x, label_y)
             painter.drawText(label_pos, self.label)
 
     def _draw_arrow_head(self, painter, p1, p2):
@@ -259,15 +275,15 @@ class GraphView(QGraphicsView):
 
         for i, name in enumerate(bottom_names):
             self.add_node("xy", name, start_x + (i + 1) * spacing_x + bottom_offset, 250)
-
+        
         self.connect("xy", "2K Dispenser", "Camera Bottom", "-15-")
         self.connect("xy", "1K Dispenser", "Camera Bottom", "-14-")
-        self.connect("xy", "Camera Top", "Camera Bottom", "-1")
-        self.connect("xy", "Gripper", "Camera Bottom", "-13")
-        self.connect("xy", "Laser", "Camera Bottom", "-7")
-        self.connect("xy", "Confocal Top", "Camera Bottom", "-8")
-        self.connect("xy", "Confocal Bottom", "Camera Top", "-5")
-        self.connect("xy", "Calibration Cube", "Camera Top", "-6")
+        self.connect("xy", "Camera Top", "Camera Bottom", "-1-")
+        self.connect("xy", "Gripper", "Camera Bottom", "-13-")
+        self.connect("xy", "Laser", "Camera Bottom", "-7-")
+        self.connect("xy", "Confocal Top", "Camera Bottom", "-8-")
+        self.connect("xy", "Confocal Bottom", "Camera Top", "-5-")
+        self.connect("xy", "Calibration Cube", "Camera Top", "-6-")
 
 
         # -------------------------
@@ -283,9 +299,16 @@ class GraphView(QGraphicsView):
             self.add_node("z", name, start_x + (i + 1) * spacing_x + bottom_offset, 590)
 
         self.connect("z", "2K Dispenser", "Calibration Cube", "-0-")
-        self.connect("z", "1K Dispenser", "Calibration Cube", "-14-")
-        self.connect("z", "Camera Top", "Camera Bottom", "-5")
-        self.connect("z", "Gripper", "Confocal Bottom", "-13")
+        self.connect("z", "1K Dispenser", "Calibration Cube", "-11-")
+        self.connect("z", "Camera Top", "Camera Bottom", "-5-")
+        self.connect("z", "Camera Bottom", "Laser", "-2-")
+        self.connect("z", "Gripper", "Confocal Bottom", "-9-")
+        self.connect("z", "Confocal Top", "Laser", "-4-")
+        self.connect("z", "Confocal Bottom", "Laser", "-3-")
+        self.connect("z", "Calibration Cube", "Confocal Top", "-10-")
+
+
+
         self._build_arrows()
 
     def _build_arrows(self):
@@ -305,7 +328,12 @@ class GraphView(QGraphicsView):
             end_rect = end_node.sceneBoundingRect()
             
             # Determine which edges are used based on relative positions
-            if start_rect.center().y() < end_rect.center().y():
+            y_diff = abs(start_rect.center().y() - end_rect.center().y())
+            if y_diff < 20:  # Same level
+                # Both at same level: both use bottom
+                node_bottom_connections[f"{group}:{start}"].append((group, start, end, label))
+                node_bottom_connections[f"{group}:{end}"].append((group, start, end, label))
+            elif start_rect.center().y() < end_rect.center().y():
                 # Normal flow: start node uses bottom, end node uses top
                 node_bottom_connections[f"{group}:{start}"].append((group, start, end, label))
                 node_top_connections[f"{group}:{end}"].append((group, start, end, label))
@@ -374,7 +402,17 @@ class GraphView(QGraphicsView):
                 start_key = f"{group}:{start}"
                 end_key = f"{group}:{end}"
                 
-                if start_rect.center().y() < end_rect.center().y():
+                y_diff = abs(start_rect.center().y() - end_rect.center().y())
+                if y_diff < 20:  # Same level
+                    # Both at same level: both use bottom
+                    start_idx = node_bottom_indices[start_key]
+                    start_total = len(node_bottom_connections[start_key])
+                    node_bottom_indices[start_key] += 1
+                    
+                    end_idx = node_bottom_indices[end_key]
+                    end_total = len(node_bottom_connections[end_key])
+                    node_bottom_indices[end_key] += 1
+                elif start_rect.center().y() < end_rect.center().y():
                     # Normal flow
                     start_idx = node_bottom_indices[start_key]
                     start_total = len(node_bottom_connections[start_key])
