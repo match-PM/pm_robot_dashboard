@@ -30,7 +30,9 @@
   <depend>assembly_scene_viewer</depend>
   <depend>pm_tf_viewer</depend>
   <depend>ros_sequential_action_programmer</depend>
-  
+  <depend>assembly_scene_publisher</depend>
+  <depend>assembly_manager_interfaces</depend>
+
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

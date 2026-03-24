@@ -72,7 +72,7 @@ class PmJogToolUi(Q.QMainWindow):
         robot_control_tabs.addTab(PmRobotConfigWidget(node), "Robot Config")
         robot_control_tabs.addTab(LaunchControlWidget(node, self), "Launch Files")
         robot_control_tabs.addTab(DispenserBuilderWidget(), "2K Dispenser Path Builder")
-        robot_control_tabs.addTab(GraphView(), "Calibration")
+        robot_control_tabs.addTab(GraphView(node), "Calibration")
 
         main_tabs.addTab(robot_control_tabs, "Robot Control")
 
