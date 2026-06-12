@@ -65,9 +65,9 @@ class PmJogToolUi(Q.QMainWindow):
         
         # Create Robot Control tab with subtabs
         robot_control_tabs = Q.QTabWidget()
-        robot_control_tabs.addTab(JointsControlWidget(self, node), "Joints")
-        robot_control_tabs.addTab(NozzleControlWidget(self, node), "Nozzles")
-        robot_control_tabs.addTab(PneumaticControlWidget(self, node), "Pneumatics")
+        #robot_control_tabs.addTab(JointsControlWidget(self, node), "Joints")
+        #robot_control_tabs.addTab(NozzleControlWidget(self, node), "Nozzles")
+        #robot_control_tabs.addTab(PneumaticControlWidget(self, node), "Pneumatics")
         #robot_control_tabs.addTab(IkControlWidget(self, node), "IK")
         robot_control_tabs.addTab(PmRobotConfigWidget(node), "Robot Config")
         robot_control_tabs.addTab(LaunchControlWidget(node, self), "Launch Files")

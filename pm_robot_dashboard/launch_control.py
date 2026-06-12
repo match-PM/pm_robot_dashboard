@@ -45,7 +45,7 @@ LAUNCH_FILES = [
 
 ROS_SETUP = (
     "source /opt/ros/humble/setup.bash && "
-    "source ~/ros2_ws/install/setup.bash && "
+    "source ~/pm_ros2_ws/install/setup.bash && "
     "source ~/Documents/ros2-for-unity/install/setup.bash"
 )
 
