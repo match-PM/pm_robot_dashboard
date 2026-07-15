@@ -183,7 +183,7 @@ class PmRobotConfigWidget(QWidget):
         self.smarpod_combobox_chuck_center = QComboBox()
         self.smarpod_combobox_chuck_center.addItems(self.pm_robot_config.smarpod_station.get_available_chucks_center())
         self.smarpod_combobox_chuck_center.setCurrentText(self.pm_robot_config.smarpod_station.get_current_chuck_center())
-        self.smarpod_combobox_chuck_center.currentTextChanged.connect(partial(self.clb_gonio_combobox_change,
+        self.smarpod_combobox_chuck_center.currentTextChanged.connect(partial(self.clb_gonio_combobox_change_center,
                                                                               self.smarpod_combobox_chuck_center,
                                                                                 self.pm_robot_config.smarpod_station))
         
@@ -508,6 +508,20 @@ class PmRobotConfigWidget(QWidget):
     def reload_config(self):
         self._disconnect_signals()
         self.pm_robot_config.reload_config()
+
+        # Refresh smarpod comboboxes with available items BEFORE reconnecting signals.
+        # Otherwise the auto-select-first-item behavior after addItems() would
+        # fire currentTextChanged and overwrite the in-memory use_chuck /
+        # use_chuck_center values with the first available item (e.g. "empty"),
+        # effectively reverting the saved configuration to defaults.
+        self.smarpod_combobox.clear()
+        self.smarpod_combobox.addItems(self.pm_robot_config.smarpod_station.get_available_chucks())
+        self.smarpod_combobox.setCurrentText(self.pm_robot_config.smarpod_station.get_current_chuck())
+
+        self.smarpod_combobox_chuck_center.clear()
+        self.smarpod_combobox_chuck_center.addItems(self.pm_robot_config.smarpod_station.get_available_chucks_center())
+        self.smarpod_combobox_chuck_center.setCurrentText(self.pm_robot_config.smarpod_station.get_current_chuck_center())
+
         self._reconnect_signals()
         self.refresh_gripper_checkboxes()
         self.box_activate_gonio_left.setChecked(self.pm_robot_config.gonio_left.get_activate_status())
@@ -522,17 +536,13 @@ class PmRobotConfigWidget(QWidget):
         self.dispenser_tip_combobox.setCurrentText(self.pm_robot_config.dispenser_1k.get_current_dispenser_tip())
         self.gonio_left_combobox.setCurrentText(self.pm_robot_config.gonio_left.get_current_chuck())
         self.gonio_right_combobox.setCurrentText(self.pm_robot_config.gonio_right.get_current_chuck())
-        
-        # Refresh smarpod comboboxes with available items
-        self.smarpod_combobox.clear()
-        self.smarpod_combobox.addItems(self.pm_robot_config.smarpod_station.get_available_chucks())
-        self.smarpod_combobox.setCurrentText(self.pm_robot_config.smarpod_station.get_current_chuck())
-        
-        self.smarpod_combobox_chuck_center.clear()
-        self.smarpod_combobox_chuck_center.addItems(self.pm_robot_config.smarpod_station.get_available_chucks_center())
-        self.smarpod_combobox_chuck_center.setCurrentText(self.pm_robot_config.smarpod_station.get_current_chuck_center())
 
-        self.node.get_logger().error(f"Text: {self.pm_robot_config.smarpod_station.get_available_chucks_center()}")
+        # Smarpod comboboxes were already refreshed while signals were
+        # disconnected above, so we only need to set the current text here
+        # to make sure the in-memory and the UI stay in sync without
+        # triggering the change handlers.
+
+        #self.node.get_logger().error(f"Text: {self.pm_robot_config.smarpod_station.get_available_chucks_center()}")
 
 class DummyMain(QMainWindow):
 
