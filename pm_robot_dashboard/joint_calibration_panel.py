@@ -9,6 +9,9 @@ from typing import Dict, List, Optional, TYPE_CHECKING, Tuple
 import yaml
 import PyQt6.QtWidgets as Q
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor
+
+from pm_robot_dashboard.calibration_logs import append_manual_calibration_log
 
 if TYPE_CHECKING:
     from pm_robot_dashboard.node import PmJogToolNode
@@ -158,7 +161,6 @@ class JointCalibrationConfig:
 
 
 class JointCalibrationPanel(Q.QWidget):
-    MODE_AUTO = "Auto Detect"
     MODE_SIM = "Simulation"
     MODE_REAL = "Real Hardware"
 
@@ -178,13 +180,17 @@ class JointCalibrationPanel(Q.QWidget):
         self._loaded_data: Dict[str, Dict[str, float]] = {}
         self._updating_table = False
         self._dirty = False
-        self._last_mode_combo_text = self.MODE_AUTO
+        self._use_real_hw = self.detect_initial_use_real_hw()
+        self._last_use_real_hw = self._use_real_hw
         self._last_translation_unit = "um"
         self._last_rotation_unit = "deg"
         self._last_archive_path: Optional[str] = None
+        self._last_manual_log_path: Optional[str] = None
+        self._last_manual_log_error: Optional[str] = None
         self._save_loaded_configuration = False
 
         self._init_ui()
+        self.update_mode_buttons(set_to_real_hw=self._use_real_hw)
         self.load_selected_config()
 
     def _init_ui(self):
@@ -192,11 +198,12 @@ class JointCalibrationPanel(Q.QWidget):
 
         controls_layout = Q.QHBoxLayout()
 
-        self.mode_combo = Q.QComboBox()
-        self.mode_combo.addItems([self.MODE_AUTO, self.MODE_SIM, self.MODE_REAL])
-        self.mode_combo.currentTextChanged.connect(lambda _text: self.load_selected_config())
-        controls_layout.addWidget(Q.QLabel("Configuration:"))
-        controls_layout.addWidget(self.mode_combo)
+        self.sim_hw_button = Q.QPushButton("Sim HW")
+        self.real_hw_button = Q.QPushButton("Real HW")
+        self.sim_hw_button.clicked.connect(self.set_sim_mode)
+        self.real_hw_button.clicked.connect(self.set_real_mode)
+        controls_layout.addWidget(self.sim_hw_button)
+        controls_layout.addWidget(self.real_hw_button)
 
         self.translation_unit_combo = Q.QComboBox()
         self.translation_unit_combo.addItems(["um", "mm", "m"])
@@ -255,26 +262,22 @@ class JointCalibrationPanel(Q.QWidget):
         self.table.setColumnCount(1 + len(CALIBRATION_KEYS))
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
+        self.table.horizontalHeader().setStretchLastSection(False)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.show_table_context_menu)
         self.table.itemChanged.connect(self.on_item_changed)
         main_layout.addWidget(self.table)
 
-    def resolve_use_real_hw(self) -> Tuple[bool, str]:
-        selected_mode = self.mode_combo.currentText()
-        if selected_mode == self.MODE_REAL:
-            return True, self.MODE_REAL
-        if selected_mode == self.MODE_SIM:
-            return False, self.MODE_SIM
-
+    def detect_initial_use_real_hw(self) -> bool:
         try:
             current_mode = self._pm_robot_utils.get_mode()
             if current_mode == self._pm_robot_utils.REAL_MODE:
-                return True, "Auto Detect: Real Hardware"
-            if current_mode == self._pm_robot_utils.UNITY_MODE:
-                return False, "Auto Detect: Unity/Simulation"
-            if current_mode == self._pm_robot_utils.GAZEBO_MODE:
-                return False, "Auto Detect: Gazebo/Simulation"
+                return True
+            if current_mode in (
+                self._pm_robot_utils.UNITY_MODE,
+                self._pm_robot_utils.GAZEBO_MODE,
+            ):
+                return False
 
             self.node.get_logger().warning(
                 f"Unknown PM robot mode '{current_mode}', using simulation calibration."
@@ -284,13 +287,49 @@ class JointCalibrationPanel(Q.QWidget):
                 f"Could not auto-detect PM robot mode, using simulation calibration: {e}"
             )
 
-        return False, "Auto Detect: Simulation fallback"
+        return False
+
+    def resolve_use_real_hw(self) -> Tuple[bool, str]:
+        if self._use_real_hw:
+            return True, self.MODE_REAL
+        return False, self.MODE_SIM
+
+    def set_sim_mode(self):
+        self.switch_mode(use_real_hw=False)
+
+    def set_real_mode(self):
+        self.switch_mode(use_real_hw=True)
+
+    def switch_mode(self, use_real_hw: bool):
+        if use_real_hw == self._use_real_hw:
+            self.update_mode_buttons(set_to_real_hw=use_real_hw)
+            return
+
+        previous_mode = self._use_real_hw
+        if not self.prepare_for_reload_or_switch():
+            self.update_mode_buttons(set_to_real_hw=previous_mode)
+            return
+
+        self._use_real_hw = use_real_hw
+        self.update_mode_buttons(set_to_real_hw=use_real_hw)
+        self.load_selected_config_unchecked()
+
+    def update_mode_buttons(self, set_to_real_hw: bool = False):
+        active_style = "background-color: #4CAF50; color: white; font-weight: bold; padding: 8px 12px; border-radius: 3px; border: 2px solid #2E7D32;"
+        inactive_style = "background-color: #e0e0e0; color: black; padding: 8px 12px; border-radius: 3px; border: 1px solid #999;"
+
+        self.sim_hw_button.setStyleSheet(inactive_style)
+        self.real_hw_button.setStyleSheet(inactive_style)
+
+        if set_to_real_hw:
+            self.real_hw_button.setStyleSheet(active_style)
+        else:
+            self.sim_hw_button.setStyleSheet(active_style)
 
     def load_selected_config(self):
         if not self.prepare_for_reload_or_switch():
-            self.mode_combo.blockSignals(True)
-            self.mode_combo.setCurrentText(self._last_mode_combo_text)
-            self.mode_combo.blockSignals(False)
+            self._use_real_hw = self._last_use_real_hw
+            self.update_mode_buttons(set_to_real_hw=self._last_use_real_hw)
             return
 
         self.load_selected_config_unchecked()
@@ -311,7 +350,8 @@ class JointCalibrationPanel(Q.QWidget):
             self.render_table()
             self.set_dirty(False)
             self.update_archive_controls()
-            self._last_mode_combo_text = self.mode_combo.currentText()
+            self.set_archive_combo_current()
+            self._last_use_real_hw = self._use_real_hw
             self._last_translation_unit = self.translation_unit_combo.currentText()
             self._last_rotation_unit = self.rotation_unit_combo.currentText()
         except Exception as e:
@@ -324,7 +364,8 @@ class JointCalibrationPanel(Q.QWidget):
             self.status_label.setText(f"Error loading joint calibration: {e}")
             self.set_dirty(False)
             self.update_archive_controls()
-            self._last_mode_combo_text = self.mode_combo.currentText()
+            self.set_archive_combo_current()
+            self._last_use_real_hw = self._use_real_hw
             self._last_translation_unit = self.translation_unit_combo.currentText()
             self._last_rotation_unit = self.rotation_unit_combo.currentText()
 
@@ -336,10 +377,15 @@ class JointCalibrationPanel(Q.QWidget):
         self.archive_combo.clear()
 
         archive_files = self._config.archive_files() if self._config is not None else []
-        enabled = bool(archive_files)
+        enabled = self._config is not None
 
-        if enabled:
-            self.archive_combo.addItem("Select archived configuration...", None)
+        if self._config is not None:
+            self.archive_combo.addItem("CURRENT", "__current__")
+            self.archive_combo.setItemData(
+                self.archive_combo.count() - 1,
+                self._config.file_path,
+                Qt.ItemDataRole.ToolTipRole,
+            )
             for archive_path in archive_files:
                 self.archive_combo.addItem(self.format_archive_name(archive_path), archive_path)
                 self.archive_combo.setItemData(
@@ -348,10 +394,18 @@ class JointCalibrationPanel(Q.QWidget):
                     Qt.ItemDataRole.ToolTipRole,
                 )
         else:
-            self.archive_combo.addItem("No archived configurations", None)
+            self.archive_combo.addItem("CURRENT unavailable", None)
 
         self.archive_combo.setEnabled(enabled)
         self.refresh_archive_button.setEnabled(self._config is not None)
+        self.archive_combo.blockSignals(False)
+
+    def set_archive_combo_current(self):
+        self.archive_combo.blockSignals(True)
+        for index in range(self.archive_combo.count()):
+            if self.archive_combo.itemData(index) == "__current__":
+                self.archive_combo.setCurrentIndex(index)
+                break
         self.archive_combo.blockSignals(False)
 
     def set_archive_combo_current_path(self, archive_path: str):
@@ -390,6 +444,10 @@ class JointCalibrationPanel(Q.QWidget):
             return
 
         archive_path = self.archive_combo.currentData()
+        if archive_path == "__current__":
+            self.reload_config()
+            return
+
         if not archive_path:
             self.status_label.setText("No archived joint calibration file selected.")
             return
@@ -445,13 +503,18 @@ class JointCalibrationPanel(Q.QWidget):
         self._last_rotation_unit = self.rotation_unit_combo.currentText()
 
     def on_item_changed(self, item: Q.QTableWidgetItem):
-        if self._updating_table or item.column() == 0:
+        if self._updating_table or self._save_loaded_configuration or item.column() == 0:
             return
         self.refresh_dirty_state()
 
     def show_table_context_menu(self, position):
         item = self.table.itemAt(position)
-        if item is None or item.column() == 0 or self._config is None:
+        if (
+            item is None
+            or item.column() == 0
+            or self._config is None
+            or self._save_loaded_configuration
+        ):
             return
 
         key = CALIBRATION_KEYS[item.column() - 1]
@@ -501,6 +564,10 @@ class JointCalibrationPanel(Q.QWidget):
     def set_dirty(self, dirty: bool):
         self._dirty = dirty
         self.save_button.setEnabled(dirty and self._config is not None)
+        if self._save_loaded_configuration:
+            self.save_button.setText("Restore Archive")
+        else:
+            self.save_button.setText("Save Changes")
 
     def refresh_dirty_state(self):
         try:
@@ -532,19 +599,68 @@ class JointCalibrationPanel(Q.QWidget):
             joint_item = Q.QTableWidgetItem(joint_name)
             joint_item.setFlags(joint_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             joint_item.setData(Qt.ItemDataRole.UserRole, joint_name)
+            self.mark_joint_item_if_archived_difference(joint_item, joint_name)
             self.table.setItem(row, 0, joint_item)
 
             for column, key in enumerate(CALIBRATION_KEYS, start=1):
                 base_value = self._config.get_value(joint_name, key)
                 item = Q.QTableWidgetItem(self.format_display_value(base_value, key))
                 item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                if self._save_loaded_configuration:
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 if base_value is None:
                     item.setToolTip("Missing in YAML. Enter a value to add it on save.")
+                self.mark_value_item_if_archived_difference(item, joint_name, key, base_value)
                 self.table.setItem(row, column, item)
 
         self.table.resizeColumnsToContents()
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setStretchLastSection(False)
         self._updating_table = False
+
+    def mark_joint_item_if_archived_difference(self, item: Q.QTableWidgetItem, joint_name: str):
+        if not self._save_loaded_configuration:
+            return
+
+        current_joint = self._loaded_data.get(joint_name)
+        archive_joint = self._config.data.get(joint_name) if self._config is not None else None
+        if current_joint != archive_joint:
+            item.setBackground(QColor("#FFF3CD"))
+            item.setToolTip("This joint differs from CURRENT.")
+
+    def mark_value_item_if_archived_difference(
+        self,
+        item: Q.QTableWidgetItem,
+        joint_name: str,
+        key: str,
+        archive_value: Optional[float],
+    ):
+        if not self._save_loaded_configuration:
+            return
+
+        current_value = self._loaded_data.get(joint_name, {}).get(key, None)
+        archive_missing = archive_value is None
+        current_missing = current_value is None
+
+        if archive_missing and current_missing:
+            return
+
+        if (
+            not archive_missing
+            and not current_missing
+            and math.isclose(float(current_value), float(archive_value), rel_tol=1e-12, abs_tol=1e-9)
+        ):
+            return
+
+        current_display = "missing"
+        if current_value is not None:
+            current_display = self.format_display_value(float(current_value), key)
+
+        archive_display = "missing"
+        if archive_value is not None:
+            archive_display = self.format_display_value(float(archive_value), key)
+
+        item.setBackground(QColor("#FFF3CD"))
+        item.setToolTip(f"CURRENT: {current_display}\nArchive: {archive_display}")
 
     def _set_headers(self):
         linear_unit = self.translation_unit_combo.currentText()
@@ -619,6 +735,8 @@ class JointCalibrationPanel(Q.QWidget):
             self.set_dirty(False)
             return
 
+        restoring_archive = self.has_loaded_configuration_change()
+
         if not self.confirm_save(changes):
             return
 
@@ -627,13 +745,26 @@ class JointCalibrationPanel(Q.QWidget):
             archive_text = ""
             if self._last_archive_path:
                 archive_text = f" Archived previous version to: {self._last_archive_path}"
-            self.status_label.setText(f"Saved {len(changes)} calibration value(s).{archive_text}")
+            log_text = ""
+            if self._last_manual_log_path:
+                log_text = f" Manual change log: {self._last_manual_log_path}"
+            elif self._last_manual_log_error:
+                log_text = f" Manual change was saved, but logging failed: {self._last_manual_log_error}"
+            action_text = f"Saved {len(changes)} calibration value(s)."
+            if restoring_archive:
+                action_text = f"Restored archived configuration with {len(changes)} value-level difference(s)."
+            self.status_label.setText(
+                f"{action_text}{archive_text}{log_text}"
+            )
 
     def prepare_for_reload_or_switch(
         self,
         translation_unit: Optional[str] = None,
         rotation_unit: Optional[str] = None,
     ) -> bool:
+        if self._save_loaded_configuration:
+            return True
+
         try:
             changes = self.collect_changes(
                 translation_unit=translation_unit,
@@ -643,8 +774,7 @@ class JointCalibrationPanel(Q.QWidget):
             self.status_label.setText(str(e))
             return False
 
-        has_configuration_change = self.has_loaded_configuration_change()
-        if not changes and not has_configuration_change:
+        if not changes:
             self.set_dirty(False)
             return True
 
@@ -658,13 +788,28 @@ class JointCalibrationPanel(Q.QWidget):
 
     def apply_changes_to_file(self, changes: List[CalibrationChange]) -> bool:
         try:
+            self._last_manual_log_path = None
+            self._last_manual_log_error = None
             if self._save_loaded_configuration:
                 self._config.data = copy.deepcopy(self._config.data)
             else:
                 self._config.data = copy.deepcopy(self._loaded_data)
             self._config.apply_changes(changes)
             self._last_archive_path = self._config.save()
+            try:
+                self._last_manual_log_path = append_manual_calibration_log(
+                    changes=self.changes_to_log_entries(changes),
+                    mode=self._config.mode_label,
+                    active_file=self._config.file_path,
+                    archive_file=self._last_archive_path,
+                )
+            except Exception as e:
+                self._last_manual_log_error = str(e)
+                self.node.get_logger().warning(
+                    f"Could not write manual calibration log: {e}"
+                )
             self.update_archive_controls()
+            self.set_archive_combo_current()
             self.set_dirty(False)
             self._save_loaded_configuration = False
             return True
@@ -672,17 +817,39 @@ class JointCalibrationPanel(Q.QWidget):
             self.status_label.setText(f"Error saving joint calibration: {e}")
             return False
 
+    def changes_to_log_entries(self, changes: List[CalibrationChange]) -> List[Dict[str, object]]:
+        entries = []
+        for change in changes:
+            entries.append(
+                {
+                    "joint_name": change.joint_name,
+                    "key": change.key,
+                    "old_value": change.old_value,
+                    "new_value": change.new_value,
+                    "display_unit": self.unit_for_key(change.key),
+                    "old_display_value": (
+                        None
+                        if change.old_value is None
+                        else self.format_display_value(change.old_value, change.key)
+                    ),
+                    "new_display_value": self.format_display_value(change.new_value, change.key),
+                }
+            )
+        return entries
+
     def confirm_save(self, changes: List[CalibrationChange]) -> bool:
         dialog = Q.QMessageBox(self)
         dialog.setIcon(Q.QMessageBox.Icon.Warning)
         dialog.setWindowTitle("Confirm Joint Calibration Change")
-        dialog.setText("Do you really want to modify the joint calibration file?")
-        change_summary = f"{len(changes)} value(s) will be changed."
         if self.has_loaded_configuration_change():
+            dialog.setText("Restore the selected archived configuration to CURRENT?")
             change_summary = (
-                f"The loaded configuration will replace the active file.\n"
+                f"The archived configuration will replace the active file.\n"
                 f"{len(changes)} value-level difference(s) detected."
             )
+        else:
+            dialog.setText("Do you really want to modify the current joint calibration file?")
+            change_summary = f"{len(changes)} value(s) will be changed."
         dialog.setInformativeText(
             f"Mode: {self._config.mode_label}\n"
             f"File: {self._config.file_path}\n\n"

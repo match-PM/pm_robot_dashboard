@@ -16,6 +16,7 @@ from pm_robot_dashboard.pm_robot_config import PmRobotConfigWidget
 from pm_robot_dashboard.launch_control import LaunchControlWidget
 from pm_robot_dashboard.pm_robot_tool_changer import ToolChangerService
 from pm_robot_dashboard.calibration_panel import GraphView
+from pm_robot_dashboard.calibration_log_widget import CalibrationLogWidget
 from pm_robot_dashboard.joint_calibration_panel import JointCalibrationPanel
 from rclpy.executors import MultiThreadedExecutor
 from pm_robot_modules.submodules.pm_dispense_path_generator_app import DispenserBuilderWidget
@@ -73,8 +74,12 @@ class PmJogToolUi(Q.QMainWindow):
         robot_control_tabs.addTab(PmRobotConfigWidget(node), "Robot Config")
         robot_control_tabs.addTab(LaunchControlWidget(node, self), "Launch Files")
         robot_control_tabs.addTab(DispenserBuilderWidget(), "2K Dispenser Path Builder")
-        robot_control_tabs.addTab(GraphView(node), "Calibration")
-        robot_control_tabs.addTab(JointCalibrationPanel(node), "Joint Calibration Inspector")
+
+        robot_calibration_tabs = Q.QTabWidget()
+        robot_calibration_tabs.addTab(GraphView(node), "Calibration")
+        robot_calibration_tabs.addTab(CalibrationLogWidget(node), "Calibration Logs")
+        robot_calibration_tabs.addTab(JointCalibrationPanel(node), "Joint Calibration Inspector")
+        robot_control_tabs.addTab(robot_calibration_tabs, "Robot Calibration")
 
         main_tabs.addTab(robot_control_tabs, "Robot Control")
 
