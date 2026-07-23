@@ -146,12 +146,19 @@ class PmRobotConfigWidget(QWidget):
                                                                            self.gripper_2_jaw_tip_combobox, 
                                                                            self.pm_robot_config.tool._gripper_2_jaw))
 
-        # dispenser tip combobox
+        # dispenser 1K tip combobox
         self.dispenser_tip_combobox = QComboBox()
         self.dispenser_tip_combobox.addItems(self.pm_robot_config.dispenser_1k.get_available_dispenser_tips())
         self.dispenser_tip_combobox.setCurrentText(self.pm_robot_config.dispenser_1k.get_current_dispenser_tip())
         self.dispenser_tip_combobox.currentTextChanged.connect(partial(self.clb_set_dispenser_tip, self.dispenser_tip_combobox))
         self.dispenser_tip_combobox.setFixedWidth(self.MIN_COMB_WIDTH)
+
+        # dispenser 2K tip combobox
+        self.dispenser_2k_tip_combobox = QComboBox()
+        self.dispenser_2k_tip_combobox.addItems(self.pm_robot_config.dispenser_2k.get_available_dispenser_tips())
+        self.dispenser_2k_tip_combobox.setCurrentText(self.pm_robot_config.dispenser_2k.get_current_dispenser_tip())
+        self.dispenser_2k_tip_combobox.currentTextChanged.connect(partial(self.clb_set_dispenser_2k_tip, self.dispenser_2k_tip_combobox))
+        self.dispenser_2k_tip_combobox.setFixedWidth(self.MIN_COMB_WIDTH)
         
         # gonio left combobox
         self.gonio_left_combobox = QComboBox()
@@ -272,66 +279,76 @@ class PmRobotConfigWidget(QWidget):
         dispenser_label = QLabel("<b>Dispenser Tip Settings</b>")
         dispenser_label.setStyleSheet(header_style)  # Apply header style
         main_layout.addWidget(dispenser_label, 8, 0, 1, 4)  # Header with bold and bigger font
-        
+
         attachments_label = QLabel("<b>Attachments:</b>")
         attachments_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(attachments_label, 9, 4)  # Regular label
-        main_layout.addWidget(self.dispenser_tip_combobox, 9, 5)
+        main_layout.addWidget(attachments_label, 9, 0)  # Regular label
+        main_layout.addWidget(self.dispenser_tip_combobox, 9, 1)
+
+        # --- Section: Dispenser 2K Tip ---
+        dispenser_2k_label = QLabel("<b>Dispenser 2K Tip Settings</b>")
+        dispenser_2k_label.setStyleSheet(header_style)  # Apply header style
+        main_layout.addWidget(dispenser_2k_label, 10, 0, 1, 4)  # Header with bold and bigger font
+
+        attachments_2k_label = QLabel("<b>Attachments:</b>")
+        attachments_2k_label.setStyleSheet(regular_style)  # Apply regular label style
+        main_layout.addWidget(attachments_2k_label, 11, 0)  # Regular label
+        main_layout.addWidget(self.dispenser_2k_tip_combobox, 11, 1)
 
         # --- Section: Gonio Left ---
         gonio_left_label = QLabel("<b>Gonio Left Settings</b>")
         gonio_left_label.setStyleSheet(header_style)  # Apply header style
         activate_gonio_left_label = QLabel("<b>Activation:</b>")
         activate_gonio_left_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(gonio_left_label, 10, 0, 1, 4)  # Header with bold and bigger font
-        main_layout.addWidget(activate_gonio_left_label, 11, 0)  # Regular label
-        main_layout.addWidget(self.box_activate_gonio_left, 11, 1)  # Checkbox for activation        
+        main_layout.addWidget(gonio_left_label, 12, 0, 1, 4)  # Header with bold and bigger font
+        main_layout.addWidget(activate_gonio_left_label, 13, 0)  # Regular label
+        main_layout.addWidget(self.box_activate_gonio_left, 13, 1)  # Checkbox for activation
         chucks_label = QLabel("<b>Chucks:</b>")
         chucks_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(chucks_label, 11, 4)  # Regular label
-        main_layout.addWidget(self.gonio_left_combobox, 11, 5)
+        main_layout.addWidget(chucks_label, 13, 4)  # Regular label
+        main_layout.addWidget(self.gonio_left_combobox, 13, 5)
 
         # --- Section: Gonio Right ---
         gonio_right_label = QLabel("<b>Gonio Right Settings</b>")
         gonio_right_label.setStyleSheet(header_style)  # Apply header style
         activate_gonio_right_label = QLabel("<b>Activation:</b>")
         activate_gonio_right_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(gonio_right_label, 12, 0, 1, 4)  # Header with bold and bigger font
-        main_layout.addWidget(activate_gonio_right_label, 13, 0)  # Regular label
-        main_layout.addWidget(self.box_activate_gonio_right, 13, 1)  # Checkbox for activation
+        main_layout.addWidget(gonio_right_label, 14, 0, 1, 4)  # Header with bold and bigger font
+        main_layout.addWidget(activate_gonio_right_label, 15, 0)  # Regular label
+        main_layout.addWidget(self.box_activate_gonio_right, 15, 1)  # Checkbox for activation
         chucks_label = QLabel("<b>Chucks:</b>")
         chucks_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(chucks_label, 13, 4)  # Regular label
-        main_layout.addWidget(self.gonio_right_combobox, 13, 5)
+        main_layout.addWidget(chucks_label, 15, 4)  # Regular label
+        main_layout.addWidget(self.gonio_right_combobox, 15, 5)
 
         # --- Section: Smarpod ---
         smarpod_label = QLabel("<b>Smarpod Settings</b>")
         smarpod_label.setStyleSheet(header_style)  # Apply header style
         activate_smarpod_label = QLabel("<b>Activation:</b>")
         activate_smarpod_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(smarpod_label, 14, 0, 1, 4)  # Header with bold and bigger font
-        main_layout.addWidget(activate_smarpod_label, 15, 0)  # Regular label
-        main_layout.addWidget(self.box_activate_smarpod, 15, 1)  # Checkbox for activation
+        main_layout.addWidget(smarpod_label, 16, 0, 1, 4)  # Header with bold and bigger font
+        main_layout.addWidget(activate_smarpod_label, 17, 0)  # Regular label
+        main_layout.addWidget(self.box_activate_smarpod, 17, 1)  # Checkbox for activation
         chucks_label = QLabel("<b>Chucks:</b>")
         chucks_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(chucks_label, 15, 4)  # Regular label
-        main_layout.addWidget(self.smarpod_combobox, 15, 5)
-        
+        main_layout.addWidget(chucks_label, 17, 4)  # Regular label
+        main_layout.addWidget(self.smarpod_combobox, 17, 5)
+
         chuck_center_label = QLabel("<b>Chuck Center:</b>")
         chuck_center_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(chuck_center_label, 16, 4)  # Regular label
-        main_layout.addWidget(self.smarpod_combobox_chuck_center, 16, 5)
+        main_layout.addWidget(chuck_center_label, 18, 4)  # Regular label
+        main_layout.addWidget(self.smarpod_combobox_chuck_center, 18, 5)
 
         # Spacer and Save Button
         main_layout.addItem(QSpacerItem(20, 20, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
         save_button = QPushButton("Save Config")
         save_button.setStyleSheet("padding: 8px 16px; font-weight: bold;")
         save_button.clicked.connect(self.save_config)
-        main_layout.addWidget(save_button, 17, 0, 1, 6)
+        main_layout.addWidget(save_button, 19, 0, 1, 6)
         reload_button = QPushButton("Reload Config")
         reload_button.setStyleSheet("padding: 8px 16px; font-weight: bold;")
         reload_button.clicked.connect(self.reload_config)
-        main_layout.addWidget(reload_button, 18, 0, 1, 6)
+        main_layout.addWidget(reload_button, 20, 0, 1, 6)
 
         # Apply layout
         self.central_widget.setLayout(main_layout)
@@ -377,6 +394,9 @@ class PmRobotConfigWidget(QWidget):
 
     def clb_set_dispenser_tip(self, combobox: QComboBox):
         self.pm_robot_config.dispenser_1k.set_currrent_dispenser_tip(combobox.currentText())
+
+    def clb_set_dispenser_2k_tip(self, combobox: QComboBox):
+        self.pm_robot_config.dispenser_2k.set_currrent_dispenser_tip(combobox.currentText())
     
     def refresh_gripper_checkboxes(self):
         self.box_activate_vacuum.setChecked(self.pm_robot_config.tool._gripper_vacuum.get_activate_status())
@@ -473,6 +493,7 @@ class PmRobotConfigWidget(QWidget):
         self.gripper_2_jaw_combobox.currentTextChanged.disconnect()
         self.gripper_2_jaw_tip_combobox.currentTextChanged.disconnect()
         self.dispenser_tip_combobox.currentTextChanged.disconnect()
+        self.dispenser_2k_tip_combobox.currentTextChanged.disconnect()
         self.gonio_left_combobox.currentTextChanged.disconnect()
         self.gonio_right_combobox.currentTextChanged.disconnect()
         self.smarpod_combobox.currentTextChanged.disconnect()
@@ -496,6 +517,7 @@ class PmRobotConfigWidget(QWidget):
         self.gripper_2_jaw_combobox.currentTextChanged.connect(partial(self.clb_tool_gripper_combobox_change, self.gripper_2_jaw_combobox, self.gripper_2_jaw_tip_combobox, self.pm_robot_config.tool._gripper_2_jaw))
         self.gripper_2_jaw_tip_combobox.currentTextChanged.connect(partial(self.clb_tip_gripper_combobox_change, self.gripper_2_jaw_tip_combobox, self.pm_robot_config.tool._gripper_2_jaw))
         self.dispenser_tip_combobox.currentTextChanged.connect(partial(self.clb_set_dispenser_tip, self.dispenser_tip_combobox))
+        self.dispenser_2k_tip_combobox.currentTextChanged.connect(partial(self.clb_set_dispenser_2k_tip, self.dispenser_2k_tip_combobox))
         self.gonio_left_combobox.currentTextChanged.connect(partial(self.clb_gonio_combobox_change, self.gonio_left_combobox, self.pm_robot_config.gonio_left))
         self.gonio_right_combobox.currentTextChanged.connect(partial(self.clb_gonio_combobox_change, self.gonio_right_combobox, self.pm_robot_config.gonio_right))
         self.smarpod_combobox.currentTextChanged.connect(partial(self.clb_gonio_combobox_change, self.smarpod_combobox, self.pm_robot_config.smarpod_station))
@@ -534,6 +556,7 @@ class PmRobotConfigWidget(QWidget):
         self.gripper_2_jaw_combobox.setCurrentText(self.pm_robot_config.tool._gripper_2_jaw.get_current_tool())
         self.gripper_2_jaw_tip_combobox.setCurrentText(self.pm_robot_config.tool._gripper_2_jaw.get_current_tool_attachment())
         self.dispenser_tip_combobox.setCurrentText(self.pm_robot_config.dispenser_1k.get_current_dispenser_tip())
+        self.dispenser_2k_tip_combobox.setCurrentText(self.pm_robot_config.dispenser_2k.get_current_dispenser_tip())
         self.gonio_left_combobox.setCurrentText(self.pm_robot_config.gonio_left.get_current_chuck())
         self.gonio_right_combobox.setCurrentText(self.pm_robot_config.gonio_right.get_current_chuck())
 
