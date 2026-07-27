@@ -651,6 +651,7 @@ class JointCalibrationPanel(Q.QWidget):
         ):
             return
 
+
         current_display = "missing"
         if current_value is not None:
             current_display = self.format_display_value(float(current_value), key)
@@ -659,8 +660,11 @@ class JointCalibrationPanel(Q.QWidget):
         if archive_value is not None:
             archive_display = self.format_display_value(float(archive_value), key)
 
+        if current_value is not None and archive_value is not None:
+            difference = float(current_value) - float(archive_value)
+
         item.setBackground(QColor("#FFF3CD"))
-        item.setToolTip(f"CURRENT: {current_display}\nArchive: {archive_display}")
+        item.setToolTip(f"CURRENT: {current_display}\nArchive: {archive_display}\nDifference: {difference}")
 
     def _set_headers(self):
         linear_unit = self.translation_unit_combo.currentText()
