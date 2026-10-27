@@ -4,7 +4,7 @@ from typing import Awaitable
 
 from PyQt6.QtGui import QFont
 import PyQt6.QtWidgets as Q
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 
 from pm_msgs.srv import EmptyWithSuccess, PneumaticGetPosition
 
@@ -14,6 +14,10 @@ from pm_robot_dashboard.lazy import LazyClient
 from pm_robot_dashboard.util import clean_topic_name
 
 class PneumaticControlWidget(Q.QScrollArea):
+    # Service responses arrive on ROS executor threads; widgets may only be
+    # changed on the GUI thread, so the callbacks emit this queued signal.
+    button_state_received = pyqtSignal(str, int)
+
     node: PmJogToolNode
 
     buttons: dict[str, OneOfManyButton]
@@ -24,6 +28,7 @@ class PneumaticControlWidget(Q.QScrollArea):
         self.node = node
         self.clients = {}
         self.buttons = {}
+        self.button_state_received.connect(self.set_button_active)
 
         main_layout = Q.QVBoxLayout(self)
         main_layout.setSizeConstraint(Q.QLayout.SizeConstraint.SetMinimumSize)
@@ -83,7 +88,10 @@ class PneumaticControlWidget(Q.QScrollArea):
             position = 0
         else:
             position = 1
-        self.buttons[pneumatic].set_active(position)
+        self.button_state_received.emit(pneumatic, position)
+
+    def set_button_active(self, name: str, idx: int):
+        self.buttons[name].set_active(idx)
 
     def handle_click(self, pneumatic: str, idx: int):
         future = self.clients[pneumatic][idx].call_async()
@@ -94,5 +102,5 @@ class PneumaticControlWidget(Q.QScrollArea):
         future.add_done_callback(partial(self.handle_click_success, pneumatic, idx))
 
     def handle_click_success(self, pneumatic: str, idx: int, _future: Awaitable):
-        self.buttons[pneumatic].set_active(idx)
+        self.button_state_received.emit(pneumatic, idx)
         self.node.get_logger().info(f"Successfully handled click for {pneumatic}")
