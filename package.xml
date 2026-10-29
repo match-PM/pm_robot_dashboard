@@ -30,6 +30,9 @@
   <depend>assembly_scene_viewer</depend>
   <depend>pm_tf_viewer</depend>
   <depend>ros_sequential_action_programmer</depend>
+  <exec_depend>rsap_interfaces</exec_depend>
+  <exec_depend>python3-matplotlib</exec_depend>
+  <exec_depend>python3-pyqt6</exec_depend>
   <depend>assembly_scene_publisher</depend>
   <depend>assembly_manager_interfaces</depend>
 

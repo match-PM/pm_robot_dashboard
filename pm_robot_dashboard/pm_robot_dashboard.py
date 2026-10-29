@@ -17,6 +17,7 @@ from pm_robot_dashboard.launch_control import LaunchControlWidget
 from pm_robot_dashboard.pm_robot_tool_changer import ToolChangerService
 from pm_robot_dashboard.calibration_panel import GraphView
 from pm_robot_dashboard.calibration_log_widget import CalibrationLogWidget
+from pm_robot_dashboard.log_analysis_widget import RsapLogAnalysisWidget
 from pm_robot_dashboard.joint_calibration_panel import JointCalibrationPanel
 from rclpy.executors import MultiThreadedExecutor
 from pm_robot_modules.submodules.pm_dispense_path_generator_app import DispenserBuilderWidget
@@ -99,6 +100,9 @@ class PmJogToolUi(Q.QMainWindow):
             print("Failed to add TfViewerApp tab, the TF viewer will not be available.")
             print(e)
         
+        self.rsap_log_analysis = RsapLogAnalysisWidget(node=node, parent=self)
+        info_helpers_tabs.addTab(self.rsap_log_analysis, "RSAP Log Analysis")
+
         main_tabs.addTab(info_helpers_tabs, "Info Helpers")
         
         # Add tabs to layout
@@ -107,6 +111,10 @@ class PmJogToolUi(Q.QMainWindow):
         # Set central widget
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
+
+    def closeEvent(self, event):
+        self.rsap_log_analysis.shutdown()
+        super().closeEvent(event)
 
 
 class PmJogToolApp:
