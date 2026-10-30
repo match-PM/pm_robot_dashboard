@@ -248,6 +248,8 @@ class RsapLogAnalysisWidget(Q.QWidget):
             except OSError as exc:
                 errors.append(f'{path}: {exc}')
         added = 0
+        seen_executions = {entry.log.get('execution_id') for entry in self.entries[0]
+                           if entry.log.get('execution_id')}
         for path in sorted(candidates):
             source = str(path.resolve())
             if source in self.file_paths:
@@ -255,6 +257,15 @@ class RsapLogAnalysisWidget(Q.QWidget):
             try:
                 with path.open(encoding='utf-8') as stream:
                     entries, warnings = parse_file_data(json.load(stream), source)
+                unique_entries = []
+                for entry in entries:
+                    execution_id = entry.log.get('execution_id')
+                    if execution_id and execution_id in seen_executions:
+                        continue
+                    if execution_id:
+                        seen_executions.add(execution_id)
+                    unique_entries.append(entry)
+                entries = unique_entries
                 self.entries[0].extend(entries)
                 self.selected[0].update(entry.key for entry in entries if entry.duration is not None)
                 self.file_paths.add(source)
@@ -353,7 +364,7 @@ class RsapLogAnalysisWidget(Q.QWidget):
                 log = json.loads(record.log_json)
                 if not isinstance(log, dict):
                     raise ValueError('log_json must contain an object')
-                identity = (record.action_uuid, record.action_index)
+                identity = log.get("execution_id") or (record.action_uuid, record.action_index, position)
                 entries.append(make_entry(source, identity, record.action_index,
                                           record.action_name, log,
                                           record.action_uuid, record.success))

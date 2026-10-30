@@ -169,3 +169,36 @@ def test_export_uses_selection_and_full_precision(widget, tmp_path, monkeypatch)
     assert output['per_process_stats']['Move']['total'] == 2
     assert list(output['total_duration_per_file'].values()) == [2]
     assert output['duration_unit'] == 'seconds'
+
+
+def test_repeated_live_executions_have_independent_selections(widget):
+    message = snapshot()
+    first = message.logs[0]
+    second = SimpleNamespace(**vars(first))
+    first.log_json = json.dumps({'execution_time': '0:00:02', 'execution_id': 'first'})
+    second.log_json = json.dumps({'execution_time': '0:00:04', 'execution_id': 'second'})
+    message.logs.append(second)
+    widget._topic_source = '/rsap/rsap_logs'
+    widget.source_tabs.setCurrentIndex(1)
+    widget._pending = message
+    widget._consume_snapshot()
+    assert len(widget.selected[1]) == 2
+    widget.tree.topLevelItem(0).child(0).setCheckState(0, Qt.CheckState.Unchecked)
+    assert widget.assessment()[1]['Move']['total'] == 4
+    widget._pending = message
+    widget._consume_snapshot()
+    assert len(widget.entries[1]) == 2
+    assert widget.assessment()[1]['Move']['total'] == 4
+
+
+def test_overlapping_export_snapshots_do_not_double_count_executions(widget, tmp_path):
+    widget.clear_files()
+    first = {'0_Move': {'execution_time': '0:00:02', 'execution_id': 'first'}}
+    second = {'0_Move': {'execution_time': '0:00:04', 'execution_id': 'second'}}
+    paths = [tmp_path / 'first.json', tmp_path / 'second.json']
+    paths[0].write_text(json.dumps({'action_log': [first]}))
+    paths[1].write_text(json.dumps({'action_log': [first, second]}))
+    widget.load_paths([str(path) for path in paths])
+    assert len(widget.entries[0]) == 2
+    assert widget.assessment()[1]['Move']['count'] == 2
+    assert widget.assessment()[1]['Move']['total'] == 6
