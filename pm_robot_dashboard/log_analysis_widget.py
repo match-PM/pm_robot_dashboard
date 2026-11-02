@@ -11,7 +11,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolb
 from matplotlib.figure import Figure
 
 from pm_robot_dashboard.log_analysis import (
-    assess, make_entry, parse_file_data,
+    action_group_labels, assess, make_entry, parse_file_data,
 )
 
 
@@ -139,7 +139,9 @@ class RsapLogAnalysisWidget(Q.QWidget):
         self.sort_order = Q.QComboBox()
         self.sort_order.addItems(['Longest first', 'Name', 'Sequence / input order'])
         self.grouping = Q.QComboBox()
-        self.grouping.addItems(['Action name', 'Action index + name'])
+        self.grouping.addItems(['Action ID + name', 'Action ID + index + name'])
+        self.grouping.setToolTip('Only entries with the same action UUID are combined. '
+                                 'Entries without an ID remain separate.')
         self.units = Q.QComboBox()
         self.units.addItems(['Seconds', 'Minutes'])
         self.minimum = Q.QDoubleSpinBox()
@@ -533,6 +535,13 @@ class RsapLogAnalysisWidget(Q.QWidget):
         unit = 'min' if divisor == 60 else 's'
         chart_type = self.chart_type.currentIndex()
         labels = [label for label in labels if stats[label]['mean'] >= self.minimum.value()]
+        entry_labels = action_group_labels(
+            self.entries[self.mode], self.grouping.currentIndex() == 1)
+        display_labels = {}
+        for entry in self.entries[self.mode]:
+            name = (f'{entry.index}_{entry.name}' if self.grouping.currentIndex() == 1
+                    else entry.name)
+            display_labels.setdefault(entry_labels[entry.key], name)
         if chart_type in (0, 1):
             if self.top_n.value():
                 labels = labels[:self.top_n.value()]
@@ -541,12 +550,12 @@ class RsapLogAnalysisWidget(Q.QWidget):
                 errors = [stats[label]['std'] / divisor for label in labels]
                 bars = axes.barh(range(len(labels)), values, color='#337da8',
                                  xerr=errors if self.error_bars.isChecked() else None, capsize=3)
-                axes.set_yticks(range(len(labels)), [self._chart_label(label) for label in labels])
+                axes.set_yticks(range(len(labels)), [self._chart_label(display_labels[label]) for label in labels])
                 if self.value_labels.isChecked():
                     axes.bar_label(bars, fmt='%.2f', padding=4)
             elif labels:
                 axes.boxplot([[value / divisor for value in groups[label]] for label in labels],
-                             vert=False, labels=[self._chart_label(label) for label in labels], showmeans=True)
+                             vert=False, labels=[self._chart_label(display_labels[label]) for label in labels], showmeans=True)
         else:
             if chart_type == 2:
                 pairs = [(source, total / divisor) for source, total in totals.items()]
@@ -554,8 +563,7 @@ class RsapLogAnalysisWidget(Q.QWidget):
                 allowed = set(labels)
                 pairs = [(f'{Path(entry.source).name} · {entry.index}: {entry.name}',
                           entry.duration / divisor) for entry in entries
-                         if (f'{entry.index}_{entry.name}' if self.grouping.currentIndex() == 1
-                             else entry.name) in allowed]
+                         if entry_labels[entry.key] in allowed]
             if self.sort_order.currentIndex() == 0:
                 pairs.sort(key=lambda pair: pair[1], reverse=True)
             elif self.sort_order.currentIndex() == 1:

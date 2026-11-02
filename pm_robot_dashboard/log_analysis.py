@@ -85,13 +85,28 @@ def statistics(values):
                 min=min(values), max=max(values), total=sum(values))
 
 
+def action_group_labels(entries, group_by_index=False):
+    """Label groups by action UUID; unidentified entries remain independent."""
+    labels, identities = {}, {}
+    for entry in entries:
+        identity = ('uuid', entry.uuid) if entry.uuid else ('entry', entry.key)
+        if group_by_index:
+            identity = (identity, entry.index)
+        if identity not in identities:
+            name = f'{entry.index}_{entry.name}' if group_by_index else entry.name
+            identifier = entry.uuid or f'no ID: {entry.key!r}'
+            identities[identity] = f'{name} [{identifier}]'
+        labels[entry.key] = identities[identity]
+    return labels
+
+
 def assess(entries, selected, group_by_index=False):
-    """Aggregate only selected entries with valid durations; all values are seconds."""
+    """Aggregate selected valid durations only when action UUIDs match."""
     groups, totals = {}, {}
+    labels = action_group_labels(entries, group_by_index)
     for entry in entries:
         if entry.key not in selected or entry.duration is None:
             continue
-        label = f'{entry.index}_{entry.name}' if group_by_index else entry.name
-        groups.setdefault(label, []).append(entry.duration)
+        groups.setdefault(labels[entry.key], []).append(entry.duration)
         totals[entry.source] = totals.get(entry.source, 0.0) + entry.duration
     return groups, {name: statistics(values) for name, values in groups.items()}, totals
