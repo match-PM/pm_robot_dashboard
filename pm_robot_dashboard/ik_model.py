@@ -73,7 +73,9 @@ class IkControlModel:
 
         # TF buffer & listener
         self.tf_buffer = Buffer(cache_time=rclpy.duration.Duration(seconds=10.0))
-        self.tf_listener = TransformListener(self.tf_buffer, node, spin_thread=True)
+        # No spin thread: the dashboard's MultiThreadedExecutor already spins this
+        # node, and a second executor on the same node corrupts memory.
+        self.tf_listener = TransformListener(self.tf_buffer, node, spin_thread=False)
 
         # Frames
         self.available_frames: List[str] = []

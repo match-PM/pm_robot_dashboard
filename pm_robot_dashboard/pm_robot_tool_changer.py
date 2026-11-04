@@ -65,70 +65,30 @@ class ToolChangerService:
 
         Request fields:
             tool_name     -- name of the tool to activate (must match an entry in the config)
+            attachment_name -- required tip/jaw belonging to the selected tool
             launch_slug   -- 'real_hw' / 'sim_hw' / 'unity_hw', or empty to auto-detect
             restart_delay -- seconds between stop and start (0 = default 10 s)
         """
         tool_name = request.tool_name.strip()
+        attachment_name = request.attachment_name.strip()
         launch_slug = request.launch_slug.strip()
         restart_delay = float(request.restart_delay) if request.restart_delay > 0 else 10.0
 
         self._node.get_logger().info(
             f"change_tool_and_restart: tool='{tool_name}' "
+            f"attachment='{attachment_name}' "
             f"launch='{launch_slug or 'auto'}' delay={restart_delay}s"
         )
         
         # ------------------------------------------------------------------ #
-        # 2. Find and apply the tool in the config                            #
+        # 1. Resolve the launch before changing the config                    #
         # ------------------------------------------------------------------ #
-        pm_config = self._pm_robot_utils.pm_robot_config
-
-        grippers = [
-            ("vacuum_gripper", pm_config.tool._gripper_vacuum),
-            ("gripper_1_jaw",  pm_config.tool._gripper_1_jaw),
-            ("gripper_2_jaw",  pm_config.tool._gripper_2_jaw),
-        ]
-
-        found_gripper = None
-        found_gripper_name = ""
-        for gripper_name, gripper in grippers:
-            available = [t[0] for t in gripper.get_available_tools()]
-            if tool_name in available:
-                found_gripper = gripper
-                found_gripper_name = gripper_name
-                break
-
-        if found_gripper is None:
-            all_tools = []
-            for _, gripper in grippers:
-                all_tools.extend([t[0] for t in gripper.get_available_tools()])
-            response.success = False
-            response.message = (
-                f"Tool '{tool_name}' not found in config. Available: {all_tools}"
-            )
-            self._node.get_logger().error(response.message)
-            return response
-
-        self._node.get_logger().info(
-            f"Tool '{tool_name}' found in gripper '{found_gripper_name}'. Updating config..."
-        )
-
-        # Deactivate all grippers, activate the right one, set the tool
-        for _, gripper in grippers:
-            gripper.deactivate()
-        found_gripper.activate()
-        found_gripper.set_current_tool(tool=tool_name)
-        pm_config.save_config()
-        self._node.get_logger().info("Config saved.")
-
-        # Notify Unity to reload the config and update the scene
-        self._trigger_unity_configure()
-
-        ## wait a moment to ensure the config file timestamp is updated before the launch tries to read it
-        time.sleep(1)
-
-        # ------------------------------------------------------------------ #
-        # 1. Resolve which launch to restart                                  #
-        # ------------------------------------------------------------------ #
+        mode = self._pm_robot_utils.get_mode()
+        active_slug = {
+            self._pm_robot_utils.REAL_MODE: "real_hw",
+            self._pm_robot_utils.GAZEBO_MODE: "sim_hw",
+            self._pm_robot_utils.UNITY_MODE: "unity_hw",
+        }.get(mode)
         if launch_slug:
             if launch_slug not in _LAUNCH_CONFIGS:
                 response.success = False
@@ -140,9 +100,11 @@ class ToolChangerService:
                 return response
             cfg = _LAUNCH_CONFIGS[launch_slug]
         else:
-            # Auto-detect: find the first running launch
+            # Auto-detect only the launch matching the current robot mode
             cfg = None
             for slug, c in _LAUNCH_CONFIGS.items():
+                if slug != active_slug:
+                    continue
                 pid = _read_pid(_pid_file(c["label"]))
                 if pid is not None and _pid_alive(pid):
                     cfg = c
@@ -159,6 +121,83 @@ class ToolChangerService:
 
         self._node.get_logger().info(f"Target launch: '{cfg['label']}'")
 
+        # ------------------------------------------------------------------ #
+        # 2. Load and validate the active bringup config                      #
+        # ------------------------------------------------------------------ #
+        pm_config = self._pm_robot_utils.pm_robot_config
+        if active_slug != launch_slug:
+            response.success = False
+            response.message = (
+                f"Requested launch '{launch_slug}' does not match the active "
+                f"robot mode '{active_slug or 'unknown'}'. Config was not changed."
+            )
+            self._node.get_logger().error(response.message)
+            return response
+
+        try:
+            # Reload on every request: the GUI selection may be stale or may
+            # have been switched manually since the robot launch started.
+            pm_config.set_real_HW(active_slug == "real_hw")
+            config_path = pm_config.get_active_bringup_config_path()
+        except Exception as exc:
+            response.success = False
+            response.message = f"Failed to load active robot config: {exc}"
+            self._node.get_logger().error(response.message)
+            return response
+        self._node.get_logger().info(f"Active bringup config: '{config_path}'")
+
+        grippers = [
+            ("vacuum_gripper", pm_config.tool._gripper_vacuum),
+            ("gripper_1_jaw",  pm_config.tool._gripper_1_jaw),
+            ("gripper_2_jaw",  pm_config.tool._gripper_2_jaw),
+        ]
+
+        found_gripper = None
+        found_gripper_name = ""
+        available_attachments = []
+        for gripper_name, gripper in grippers:
+            for available_tool, attachments in gripper.get_available_tools():
+                if tool_name == available_tool:
+                    found_gripper = gripper
+                    found_gripper_name = gripper_name
+                    available_attachments = attachments
+                    break
+            if found_gripper is not None:
+                break
+
+        if found_gripper is None:
+            all_tools = []
+            for _, gripper in grippers:
+                all_tools.extend([t[0] for t in gripper.get_available_tools()])
+            response.success = False
+            response.message = (
+                f"Tool '{tool_name}' not found in config. Available: {all_tools}"
+            )
+            self._node.get_logger().error(response.message)
+            return response
+
+        if not attachment_name or attachment_name not in available_attachments:
+            response.success = False
+            response.message = (
+                f"Invalid attachment '{attachment_name}' for tool '{tool_name}'. "
+                f"Available: {available_attachments}"
+            )
+            self._node.get_logger().error(response.message)
+            return response
+
+        # Deactivate all grippers, activate the right one, set tool and attachment
+        for _, gripper in grippers:
+            gripper.deactivate()
+        found_gripper.activate()
+        found_gripper.set_current_tool(tool=tool_name, ext=attachment_name)
+        pm_config.save_config()
+        self._node.get_logger().info(f"Config saved: {config_path}")
+
+        # Notify Unity to reload the config and update the scene
+        self._trigger_unity_configure()
+
+        # Allow the config update to propagate before restarting the launch
+        time.sleep(1)
 
         # ------------------------------------------------------------------ #
         # 3. Stop the running launch                                          #
@@ -202,8 +241,9 @@ class ToolChangerService:
             subprocess.Popen(cmd)
             response.success = True
             response.message = (
-                f"Tool changed to '{tool_name}' (gripper: {found_gripper_name}), "
-                f"config saved, launch '{cfg['label']}' restarted."
+                f"Tool changed to '{tool_name}' with attachment '{attachment_name}' "
+                f"(gripper: {found_gripper_name}), "
+                f"config saved to '{config_path}', launch '{cfg['label']}' restarted."
             )
             self._node.get_logger().info(response.message)
         except Exception as exc:

@@ -18,6 +18,7 @@ from pm_robot_dashboard.launch_control_tmux import TmuxLaunchControlWidget
 from pm_robot_dashboard.pm_robot_tool_changer import ToolChangerService
 from pm_robot_dashboard.calibration_panel import GraphView
 from pm_robot_dashboard.calibration_log_widget import CalibrationLogWidget
+from pm_robot_dashboard.log_analysis_widget import RsapLogAnalysisWidget
 from pm_robot_dashboard.joint_calibration_panel import JointCalibrationPanel
 from pm_video_recorder.widget import VideoRecorderWidget
 from rclpy.executors import MultiThreadedExecutor
@@ -104,6 +105,9 @@ class PmJogToolUi(Q.QMainWindow):
             print("Failed to add TfViewerApp tab, the TF viewer will not be available.")
             print(e)
         
+        self.rsap_log_analysis = RsapLogAnalysisWidget(node=node, parent=self)
+        info_helpers_tabs.addTab(self.rsap_log_analysis, "RSAP Log Analysis")
+
         main_tabs.addTab(info_helpers_tabs, "Info Helpers")
         
         # Add tabs to layout
@@ -119,6 +123,8 @@ class PmJogToolUi(Q.QMainWindow):
             event.accept()
         else:
             event.ignore()
+        self.rsap_log_analysis.shutdown()
+        super().closeEvent(event)
 
 
 class PmJogToolApp:

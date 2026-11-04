@@ -1,592 +1,839 @@
-import sys
-from PyQt6.QtWidgets import QApplication, QSpacerItem,QSizePolicy, QMainWindow, QGridLayout,QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton, QFormLayout, QHBoxLayout, QCheckBox, QComboBox
-import yaml
-from PyQt6.QtCore import Qt
-from ament_index_python.packages import get_package_share_directory, PackageNotFoundError
-from functools import partial
-from typing import Union
-from rclpy.node import Node
-from pm_robot_modules.submodules.pm_robot_config import (VacuumGripperConfig, 
-                                                         ParallelGripperConfig, 
-                                                         DispenserTipConfig, 
-                                                         GonioConfig, 
-                                                         PmRobotConfig)
+"""PM robot bringup configuration editor and requirement-file creator."""
 
+import sys
+from pathlib import Path
+
+import yaml
+from PyQt6.QtCore import QSignalBlocker, Qt
+from PyQt6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QTreeWidgetItemIterator,
+    QVBoxLayout,
+    QWidget,
+)
+from rclpy.node import Node
+
+from pm_robot_modules.submodules.configuration_requirements import (
+    DEFAULT_CONFIGURATION_FILE_NAME,
+)
 from pm_skills.py_modules.PmRobotUtils import PmRobotUtils
 
-#class ConfigApp():
+
+class ConfigurationRequirementDialog(QDialog):
+    """Select bringup properties and save them as a partial YAML mapping."""
+
+    PATH_ROLE = int(Qt.ItemDataRole.UserRole)
+    EXCLUDED_KEYS = {'unity_parent'}
+    EXCLUDED_PREFIXES = ('available_', 'availabe_')
+
+    def __init__(self, configuration: dict, parent=None):
+        super().__init__(parent)
+        self.configuration = configuration
+        self.setWindowTitle('Create PM Robot Configuration Requirement')
+        self.resize(760, 680)
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        title = QLabel('Select the properties this assembly process requires')
+        title.setObjectName('dialogTitle')
+        layout.addWidget(title)
+
+        description = QLabel(
+            'Only checked properties are written. Unchecked properties are '
+            'ignored when check_pm_robot_configuration is called.'
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        selection_buttons = QHBoxLayout()
+        select_all_button = QPushButton('Select all')
+        clear_all_button = QPushButton('Clear all')
+        select_all_button.clicked.connect(lambda: self._set_all_checked(True))
+        clear_all_button.clicked.connect(lambda: self._set_all_checked(False))
+        selection_buttons.addWidget(select_all_button)
+        selection_buttons.addWidget(clear_all_button)
+        selection_buttons.addStretch()
+        layout.addLayout(selection_buttons)
+
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(['Configuration property', 'Current value'])
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setColumnWidth(0, 480)
+        layout.addWidget(self.tree, 1)
+
+        self._populate_tree(
+            self.tree.invisibleRootItem(),
+            self.configuration,
+            (),
+        )
+        self.tree.expandToDepth(1)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText(
+            'Create config file'
+        )
+        buttons.accepted.connect(self._save_selected_configuration)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.setStyleSheet(
+            '#dialogTitle { font-size: 16px; font-weight: bold; }'
+            'QTreeWidget { border: 1px solid #b8b8b8; }'
+        )
+
+    @classmethod
+    def _is_excluded_key(cls, key: str) -> bool:
+        return key in cls.EXCLUDED_KEYS or key.startswith(
+            cls.EXCLUDED_PREFIXES
+        )
+
+    @staticmethod
+    def _display_name(key: str) -> str:
+        return key.replace('_', ' ').strip().title()
+
+    @staticmethod
+    def _display_value(value) -> str:
+        if isinstance(value, bool):
+            return 'true' if value else 'false'
+        if value is None:
+            return 'null'
+        return str(value)
+
+    def _populate_tree(self, parent, value, path):
+        if not isinstance(value, dict):
+            return
+
+        for key, child_value in value.items():
+            if self._is_excluded_key(str(key)) or isinstance(child_value, list):
+                continue
+
+            child_path = path + (key,)
+            item = QTreeWidgetItem(parent)
+            item.setText(0, self._display_name(str(key)))
+            item.setToolTip(0, '.'.join(str(part) for part in child_path))
+
+            if isinstance(child_value, dict):
+                item.setFlags(
+                    item.flags()
+                    | Qt.ItemFlag.ItemIsUserCheckable
+                    | Qt.ItemFlag.ItemIsAutoTristate
+                )
+                item.setCheckState(0, Qt.CheckState.Checked)
+                self._populate_tree(item, child_value, child_path)
+                if item.childCount() == 0:
+                    parent.removeChild(item)
+                continue
+
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(0, Qt.CheckState.Checked)
+            item.setText(1, self._display_value(child_value))
+            item.setData(0, self.PATH_ROLE, list(child_path))
+
+    def _set_all_checked(self, checked: bool):
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        iterator = QTreeWidgetItemIterator(self.tree)
+        while iterator.value():
+            item = iterator.value()
+            if item.data(0, self.PATH_ROLE) is not None:
+                item.setCheckState(0, state)
+            iterator += 1
+
+    def _value_at_path(self, path):
+        value = self.configuration
+        for key in path:
+            value = value[key]
+        return value
+
+    @staticmethod
+    def _set_nested_value(target: dict, path, value):
+        destination = target
+        for key in path[:-1]:
+            destination = destination.setdefault(key, {})
+        destination[path[-1]] = value
+
+    def selected_configuration(self) -> dict:
+        selected = {}
+        iterator = QTreeWidgetItemIterator(self.tree)
+        while iterator.value():
+            item = iterator.value()
+            path = item.data(0, self.PATH_ROLE)
+            if path is not None and item.checkState(0) == Qt.CheckState.Checked:
+                self._set_nested_value(
+                    selected,
+                    path,
+                    self._value_at_path(path),
+                )
+            iterator += 1
+        return selected
+
+    def _save_selected_configuration(self):
+        selected = self.selected_configuration()
+        if not selected:
+            QMessageBox.warning(
+                self,
+                'No properties selected',
+                'Select at least one configuration property.',
+            )
+            return
+
+        suggested_path = str(Path.cwd() / DEFAULT_CONFIGURATION_FILE_NAME)
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            'Create PM robot configuration requirement',
+            suggested_path,
+            'YAML files (*.yaml *.yml)',
+        )
+        if not file_path:
+            return
+
+        output_path = Path(file_path)
+        if output_path.suffix.lower() not in ('.yaml', '.yml'):
+            output_path = output_path.with_suffix('.yaml')
+
+        try:
+            with output_path.open('w', encoding='utf-8') as output_file:
+                yaml.safe_dump(
+                    selected,
+                    output_file,
+                    default_flow_style=False,
+                    sort_keys=False,
+                )
+        except OSError as error:
+            QMessageBox.critical(
+                self,
+                'Could not create configuration file',
+                str(error),
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            'Configuration file created',
+            f'Created partial configuration requirement:\n{output_path}',
+        )
+        self.accept()
+
+
 class PmRobotConfigWidget(QWidget):
-    MIN_COMB_WIDTH = 300
-    
-    def __init__(self, ros_node:Node ):
+    """Grouped editor for the active PM robot bringup configuration."""
+
+    MIN_COMBO_WIDTH = 260
+
+    def __init__(self, ros_node: Node):
         super().__init__()
         self.node = ros_node
-        # Reuse the PmRobotUtils already attached to the node (avoids a second instance)
         if hasattr(ros_node, 'pm_robot_utils'):
             self._pm_robot_utils = ros_node.pm_robot_utils
         else:
             self._pm_robot_utils = PmRobotUtils(ros_node)
         self.pm_robot_config = self._pm_robot_utils.pm_robot_config
-        self.init_ui()
+
+        self._build_ui()
+        self._connect_signals()
         self.auto_detect_mode()
-        
 
-    def init_ui(self):
-        self.central_widget = QWidget(self)
-        main_layout = QGridLayout()
-        #main_layout = QVBoxLayout()
+    def _build_ui(self):
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(14, 14, 14, 14)
+        root_layout.setSpacing(12)
 
-        # Create mode selection buttons at the top
-        mode_button_layout = QHBoxLayout()
-        
-        self.sim_hw_button = QPushButton("Sim HW")
-        self.real_hw_button = QPushButton("Real HW")
-        self.auto_detect_button = QPushButton("Auto Detect")
-        
+        mode_frame = QFrame()
+        mode_frame.setObjectName('modeFrame')
+        mode_layout = QHBoxLayout(mode_frame)
+        mode_layout.setContentsMargins(10, 8, 10, 8)
+
+        mode_title = QLabel('Configuration source')
+        mode_title.setObjectName('sectionTitle')
+        mode_layout.addWidget(mode_title)
+        mode_layout.addStretch()
+
+        self.sim_hw_button = QPushButton('Simulation')
+        self.real_hw_button = QPushButton('Real hardware')
+        self.auto_detect_button = QPushButton('Auto detect')
+        mode_layout.addWidget(self.sim_hw_button)
+        mode_layout.addWidget(self.real_hw_button)
+        mode_layout.addWidget(self.auto_detect_button)
+        root_layout.addWidget(mode_frame)
+
+        self.config_mode_label = QLabel()
+        self.config_mode_label.setObjectName('modeLabel')
+        self.config_path_label = QLabel()
+        self.config_path_label.setObjectName('pathLabel')
+        self.config_path_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        root_layout.addWidget(self.config_mode_label)
+        root_layout.addWidget(self.config_path_label)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        content_layout = QGridLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setHorizontalSpacing(12)
+        content_layout.setVerticalSpacing(12)
+
+        content_layout.addWidget(self._build_vacuum_group(), 0, 0)
+        content_layout.addWidget(self._build_parallel_gripper_group(1), 0, 1)
+        content_layout.addWidget(self._build_parallel_gripper_group(2), 1, 0)
+        content_layout.addWidget(self._build_dispenser_group(), 1, 1)
+        content_layout.addWidget(self._build_measurement_group(), 2, 0)
+        content_layout.addWidget(self._build_station_group(), 2, 1)
+        content_layout.setColumnStretch(0, 1)
+        content_layout.setColumnStretch(1, 1)
+        content_layout.setRowStretch(3, 1)
+
+        scroll_area.setWidget(content)
+        root_layout.addWidget(scroll_area, 1)
+
+        action_layout = QHBoxLayout()
+        self.load_config_button = QPushButton('Load config file')
+        self.load_config_button.setObjectName('secondaryAction')
+        self.create_config_button = QPushButton('Create config file')
+        self.create_config_button.setObjectName('secondaryAction')
+        self.reload_button = QPushButton('Reload')
+        self.save_button = QPushButton('Save bringup config')
+        self.save_button.setObjectName('primaryAction')
+        action_layout.addWidget(self.load_config_button)
+        action_layout.addWidget(self.create_config_button)
+        action_layout.addStretch()
+        action_layout.addWidget(self.reload_button)
+        action_layout.addWidget(self.save_button)
+        root_layout.addLayout(action_layout)
+
+        self.setStyleSheet(
+            '#modeFrame { background: #f0f3f6; border: 1px solid #ccd3da; '
+            'border-radius: 5px; }'
+            '#sectionTitle { font-size: 14px; font-weight: bold; }'
+            '#modeLabel { font-size: 13px; font-weight: bold; color: #0055aa; }'
+            '#pathLabel { color: #555; }'
+            'QGroupBox { font-weight: bold; border: 1px solid #c8c8c8; '
+            'border-radius: 5px; margin-top: 10px; padding-top: 10px; }'
+            'QGroupBox::title { subcontrol-origin: margin; left: 10px; '
+            'padding: 0 4px; }'
+            'QPushButton { padding: 7px 12px; }'
+            '#primaryAction { background: #1976d2; color: white; '
+            'font-weight: bold; }'
+            '#secondaryAction { font-weight: bold; }'
+        )
+
+    def _new_combo(self):
+        combo = QComboBox()
+        combo.setMinimumWidth(self.MIN_COMBO_WIDTH)
+        combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        return combo
+
+    def _build_vacuum_group(self):
+        group = QGroupBox('Vacuum gripper')
+        layout = QFormLayout(group)
+        self.box_activate_vacuum = QCheckBox('Active')
+        self.vacuum_tool_combobox = self._new_combo()
+        self.vacuum_tip_combobox = self._new_combo()
+        layout.addRow('State', self.box_activate_vacuum)
+        layout.addRow('Tool', self.vacuum_tool_combobox)
+        layout.addRow('Attachment', self.vacuum_tip_combobox)
+        return group
+
+    def _build_parallel_gripper_group(self, number):
+        group = QGroupBox(f'Parallel gripper {number} jaw')
+        layout = QFormLayout(group)
+        active = QCheckBox('Active')
+        tool = self._new_combo()
+        attachment = self._new_combo()
+
+        if number == 1:
+            self.box_activate_gripper_1_jaw = active
+            self.gripper_1_jaw_combobox = tool
+            self.gripper_1_jaw_tip_combobox = attachment
+        else:
+            self.box_activate_gripper_2_jaw = active
+            self.gripper_2_jaw_combobox = tool
+            self.gripper_2_jaw_tip_combobox = attachment
+
+        layout.addRow('State', active)
+        layout.addRow('Tool', tool)
+        layout.addRow('Jaw', attachment)
+        return group
+
+    def _build_dispenser_group(self):
+        group = QGroupBox('Dispenser tips')
+        layout = QFormLayout(group)
+        self.dispenser_tip_combobox = self._new_combo()
+        self.dispenser_2k_tip_combobox = self._new_combo()
+        layout.addRow('1K tip', self.dispenser_tip_combobox)
+        layout.addRow('2K tip', self.dispenser_2k_tip_combobox)
+        return group
+
+    def _build_measurement_group(self):
+        group = QGroupBox('Measurement systems')
+        layout = QFormLayout(group)
+        self.use_confocal_head_checkbox = QCheckBox('Enabled')
+        self.use_confocal_bottom_checkbox = QCheckBox('Enabled')
+        self.use_keyence_bottom_checkbox = QCheckBox('Enabled')
+        self.confocal_sensor_head_combobox = self._new_combo()
+        layout.addRow('Confocal head', self.use_confocal_head_checkbox)
+        layout.addRow('Head configuration', self.confocal_sensor_head_combobox)
+        layout.addRow('Confocal bottom', self.use_confocal_bottom_checkbox)
+        layout.addRow('Keyence bottom', self.use_keyence_bottom_checkbox)
+        return group
+
+    def _build_station_group(self):
+        group = QGroupBox('Stations and chucks')
+        layout = QGridLayout(group)
+        layout.addWidget(QLabel('Station'), 0, 0)
+        layout.addWidget(QLabel('Active'), 0, 1)
+        layout.addWidget(QLabel('Chuck'), 0, 2)
+
+        self.box_activate_gonio_left = QCheckBox()
+        self.box_activate_gonio_right = QCheckBox()
+        self.box_activate_smarpod = QCheckBox()
+        self.gonio_left_combobox = self._new_combo()
+        self.gonio_right_combobox = self._new_combo()
+        self.smarpod_combobox = self._new_combo()
+        self.smarpod_combobox_chuck_center = self._new_combo()
+
+        rows = (
+            ('Gonio left', self.box_activate_gonio_left,
+             self.gonio_left_combobox),
+            ('Gonio right', self.box_activate_gonio_right,
+             self.gonio_right_combobox),
+            ('SmarPod', self.box_activate_smarpod,
+             self.smarpod_combobox),
+        )
+        for row, (label, checkbox, combo) in enumerate(rows, start=1):
+            layout.addWidget(QLabel(label), row, 0)
+            layout.addWidget(checkbox, row, 1)
+            layout.addWidget(combo, row, 2)
+
+        layout.addWidget(QLabel('SmarPod center'), 4, 0)
+        layout.addWidget(self.smarpod_combobox_chuck_center, 4, 2)
+        layout.setColumnStretch(2, 1)
+        return group
+
+    def _connect_signals(self):
         self.sim_hw_button.clicked.connect(self.set_sim_mode)
         self.real_hw_button.clicked.connect(self.set_real_mode)
         self.auto_detect_button.clicked.connect(self.auto_detect_mode)
-        
-        mode_button_layout.addWidget(self.sim_hw_button)
-        mode_button_layout.addWidget(self.real_hw_button)
-        mode_button_layout.addWidget(self.auto_detect_button)
-        mode_button_layout.addStretch()
-        
-        main_layout.addLayout(mode_button_layout, 0, 0, 1, 6)
-        
-        # Create configuration mode label
-        self.config_mode_label = QLabel()
-        self.config_mode_label.setStyleSheet("font-weight: bold; font-size: 12pt; color: #0055AA;")
-        main_layout.addWidget(self.config_mode_label, 1, 0, 1, 6)
-        
-        # Update row indices for the rest of the widgets
-        row_offset = 2
+        self.save_button.clicked.connect(self.save_config)
+        self.reload_button.clicked.connect(self.reload_config)
+        self.load_config_button.clicked.connect(self.load_config_file)
+        self.create_config_button.clicked.connect(self.create_config_file)
 
-        # vacuum gripper checkbox
-        self.box_activate_vacuum = QCheckBox()
-        self.box_activate_vacuum.setChecked(self.pm_robot_config.tool._gripper_vacuum.get_activate_status())
-        self.box_activate_vacuum.clicked.connect(partial(self.clb_gripper_checkbox_change, self.box_activate_vacuum, self.pm_robot_config.tool._gripper_vacuum))
+        self.box_activate_vacuum.clicked.connect(
+            lambda checked: self._set_active_tool('vacuum', checked)
+        )
+        self.box_activate_gripper_1_jaw.clicked.connect(
+            lambda checked: self._set_active_tool('gripper_1', checked)
+        )
+        self.box_activate_gripper_2_jaw.clicked.connect(
+            lambda checked: self._set_active_tool('gripper_2', checked)
+        )
 
-        # parallel gripper 1 jaw checkbox
-        self.box_activate_gripper_1_jaw = QCheckBox()
-        self.box_activate_gripper_1_jaw.setChecked(self.pm_robot_config.tool._gripper_1_jaw.get_activate_status())
-        self.box_activate_gripper_1_jaw.clicked.connect(partial(self.clb_gripper_checkbox_change, self.box_activate_gripper_1_jaw, self.pm_robot_config.tool._gripper_1_jaw))
+        self.vacuum_tool_combobox.currentTextChanged.connect(
+            lambda text: self._tool_changed('vacuum', text)
+        )
+        self.gripper_1_jaw_combobox.currentTextChanged.connect(
+            lambda text: self._tool_changed('gripper_1', text)
+        )
+        self.gripper_2_jaw_combobox.currentTextChanged.connect(
+            lambda text: self._tool_changed('gripper_2', text)
+        )
+        self.vacuum_tip_combobox.currentTextChanged.connect(
+            lambda text: self._attachment_changed('vacuum', text)
+        )
+        self.gripper_1_jaw_tip_combobox.currentTextChanged.connect(
+            lambda text: self._attachment_changed('gripper_1', text)
+        )
+        self.gripper_2_jaw_tip_combobox.currentTextChanged.connect(
+            lambda text: self._attachment_changed('gripper_2', text)
+        )
 
-        # parallel gripper 2 jaw checkbox
-        self.box_activate_gripper_2_jaw = QCheckBox()
-        self.box_activate_gripper_2_jaw.setChecked(self.pm_robot_config.tool._gripper_2_jaw.get_activate_status())
-        self.box_activate_gripper_2_jaw.clicked.connect(partial(self.clb_gripper_checkbox_change, self.box_activate_gripper_2_jaw, self.pm_robot_config.tool._gripper_2_jaw))
+        self.dispenser_tip_combobox.currentTextChanged.connect(
+            self._set_dispenser_1k_tip
+        )
+        self.dispenser_2k_tip_combobox.currentTextChanged.connect(
+            self._set_dispenser_2k_tip
+        )
+        self.confocal_sensor_head_combobox.currentTextChanged.connect(
+            self._set_confocal_sensor_head
+        )
 
-        # gonio left checkbox
-        self.box_activate_gonio_left = QCheckBox()
-        self.box_activate_gonio_left.setChecked(self.pm_robot_config.gonio_left.get_activate_status())
-        self.box_activate_gonio_left.clicked.connect(partial(self.clb_gonio_checkbox_change, self.box_activate_gonio_left, self.pm_robot_config.gonio_left))
+        self.box_activate_gonio_left.clicked.connect(
+            lambda checked: self._set_station_active('gonio_left', checked)
+        )
+        self.box_activate_gonio_right.clicked.connect(
+            lambda checked: self._set_station_active('gonio_right', checked)
+        )
+        self.box_activate_smarpod.clicked.connect(
+            lambda checked: self._set_station_active('smarpod', checked)
+        )
+        self.gonio_left_combobox.currentTextChanged.connect(
+            lambda text: self._set_station_chuck('gonio_left', text)
+        )
+        self.gonio_right_combobox.currentTextChanged.connect(
+            lambda text: self._set_station_chuck('gonio_right', text)
+        )
+        self.smarpod_combobox.currentTextChanged.connect(
+            lambda text: self._set_station_chuck('smarpod', text)
+        )
+        self.smarpod_combobox_chuck_center.currentTextChanged.connect(
+            self._set_smarpod_chuck_center
+        )
 
-        # gonio right checkbox  
-        self.box_activate_gonio_right = QCheckBox()
-        self.box_activate_gonio_right.setChecked(self.pm_robot_config.gonio_right.get_activate_status())
-        self.box_activate_gonio_right.clicked.connect(partial(self.clb_gonio_checkbox_change, self.box_activate_gonio_right, self.pm_robot_config.gonio_right))
+        self.use_confocal_head_checkbox.clicked.connect(
+            lambda checked: self._set_measurement_enabled(
+                'use_confocal_head', checked
+            )
+        )
+        self.use_confocal_bottom_checkbox.clicked.connect(
+            lambda checked: self._set_measurement_enabled(
+                'use_confocal_bottom', checked
+            )
+        )
+        self.use_keyence_bottom_checkbox.clicked.connect(
+            lambda checked: self._set_measurement_enabled(
+                'use_keyence_bottom', checked
+            )
+        )
 
-        # smarpod checkbox
-        self.box_activate_smarpod = QCheckBox()
-        self.box_activate_smarpod.setChecked(self.pm_robot_config.smarpod_station.get_activate_status())
-        self.box_activate_smarpod.clicked.connect(partial(self.clb_gonio_checkbox_change, self.box_activate_smarpod, self.pm_robot_config.smarpod_station))
-        
-        # vacuum gripper combobox
-        self.vacuum_tool_combobox = QComboBox()
-        self.vacuum_tool_combobox.addItems([t[0] for t in self.pm_robot_config.tool._gripper_vacuum.get_available_tools()])
-        self.vacuum_tool_combobox.setCurrentText(self.pm_robot_config.tool._gripper_vacuum.get_current_tool())
-        self.vacuum_tool_combobox.setFixedWidth(self.MIN_COMB_WIDTH)
+    def _tool(self, tool_key):
+        tools = self.pm_robot_config.tool
+        return {
+            'vacuum': tools._gripper_vacuum,
+            'gripper_1': tools._gripper_1_jaw,
+            'gripper_2': tools._gripper_2_jaw,
+        }[tool_key]
 
-        self.vacuum_tip_combobox = QComboBox()
-        self.vacuum_tip_combobox.addItems(self.pm_robot_config.tool._gripper_vacuum.get_current_extension_list())
-        self.vacuum_tip_combobox.setCurrentText(self.pm_robot_config.tool._gripper_vacuum.get_current_tool_attachment())
-        self.vacuum_tip_combobox.setFixedWidth(self.MIN_COMB_WIDTH)
-        
-        self.vacuum_tool_combobox.currentTextChanged.connect(partial(self.clb_tool_gripper_combobox_change, self.vacuum_tool_combobox, self.vacuum_tip_combobox, self.pm_robot_config.tool._gripper_vacuum))
-        self.vacuum_tip_combobox.currentTextChanged.connect(partial(self.clb_tip_gripper_combobox_change, self.vacuum_tip_combobox, self.pm_robot_config.tool._gripper_vacuum))
-        
-        # parallel gripper 1 jaw combobox
-        self.gripper_1_jaw_combobox = QComboBox()
-        self.gripper_1_jaw_combobox.addItems([t[0] for t in self.pm_robot_config.tool._gripper_1_jaw.get_available_tools()])
-        self.gripper_1_jaw_combobox.setCurrentText(self.pm_robot_config.tool._gripper_1_jaw.get_current_tool())
-        self.gripper_1_jaw_combobox.setFixedWidth(self.MIN_COMB_WIDTH)
-        
-        self.gripper_1_jaw_tip_combobox = QComboBox()
-        self.gripper_1_jaw_tip_combobox.addItems(self.pm_robot_config.tool._gripper_1_jaw.get_current_extension_list())
-        self.gripper_1_jaw_tip_combobox.setCurrentText(self.pm_robot_config.tool._gripper_1_jaw.get_current_tool_attachment())
-        self.gripper_1_jaw_tip_combobox.setFixedWidth(self.MIN_COMB_WIDTH)
-        
-        self.gripper_1_jaw_combobox.currentTextChanged.connect(partial(self.clb_tool_gripper_combobox_change, 
-                                                                       self.gripper_1_jaw_combobox, 
-                                                                       self.gripper_1_jaw_tip_combobox, 
-                                                                       self.pm_robot_config.tool._gripper_1_jaw))
-        
-        self.gripper_1_jaw_tip_combobox.currentTextChanged.connect(partial(self.clb_tip_gripper_combobox_change, 
-                                                                           self.gripper_1_jaw_tip_combobox, 
-                                                                           self.pm_robot_config.tool._gripper_1_jaw))
+    def _station(self, station_key):
+        return {
+            'gonio_left': self.pm_robot_config.gonio_left,
+            'gonio_right': self.pm_robot_config.gonio_right,
+            'smarpod': self.pm_robot_config.smarpod_station,
+        }[station_key]
 
-        # parallel gripper 2 jaw combobox
-        self.gripper_2_jaw_combobox = QComboBox()
-        self.gripper_2_jaw_combobox.addItems([t[0] for t in self.pm_robot_config.tool._gripper_2_jaw.get_available_tools()])
-        self.gripper_2_jaw_combobox.setCurrentText(self.pm_robot_config.tool._gripper_2_jaw.get_current_tool())
-        self.gripper_2_jaw_combobox.setFixedWidth(self.MIN_COMB_WIDTH)
-        
-        self.gripper_2_jaw_tip_combobox = QComboBox()
-        self.gripper_2_jaw_tip_combobox.addItems(self.pm_robot_config.tool._gripper_2_jaw.get_current_extension_list())
-        self.gripper_2_jaw_tip_combobox.setCurrentText(self.pm_robot_config.tool._gripper_2_jaw.get_current_tool_attachment())
-        self.gripper_2_jaw_tip_combobox.setFixedWidth(self.MIN_COMB_WIDTH)
-        
-        self.gripper_2_jaw_combobox.currentTextChanged.connect(partial(self.clb_tool_gripper_combobox_change, 
-                                                                       self.gripper_2_jaw_combobox, 
-                                                                       self.gripper_2_jaw_tip_combobox, 
-                                                                       self.pm_robot_config.tool._gripper_2_jaw))
-        
-        self.gripper_2_jaw_tip_combobox.currentTextChanged.connect(partial(self.clb_tip_gripper_combobox_change, 
-                                                                           self.gripper_2_jaw_tip_combobox, 
-                                                                           self.pm_robot_config.tool._gripper_2_jaw))
+    def _set_dispenser_1k_tip(self, tip):
+        if tip:
+            self.pm_robot_config.dispenser_1k.set_currrent_dispenser_tip(tip)
 
-        # dispenser 1K tip combobox
-        self.dispenser_tip_combobox = QComboBox()
-        self.dispenser_tip_combobox.addItems(self.pm_robot_config.dispenser_1k.get_available_dispenser_tips())
-        self.dispenser_tip_combobox.setCurrentText(self.pm_robot_config.dispenser_1k.get_current_dispenser_tip())
-        self.dispenser_tip_combobox.currentTextChanged.connect(partial(self.clb_set_dispenser_tip, self.dispenser_tip_combobox))
-        self.dispenser_tip_combobox.setFixedWidth(self.MIN_COMB_WIDTH)
+    def _set_dispenser_2k_tip(self, tip):
+        if tip:
+            self.pm_robot_config.dispenser_2k.set_currrent_dispenser_tip(tip)
 
-        # dispenser 2K tip combobox
-        self.dispenser_2k_tip_combobox = QComboBox()
-        self.dispenser_2k_tip_combobox.addItems(self.pm_robot_config.dispenser_2k.get_available_dispenser_tips())
-        self.dispenser_2k_tip_combobox.setCurrentText(self.pm_robot_config.dispenser_2k.get_current_dispenser_tip())
-        self.dispenser_2k_tip_combobox.currentTextChanged.connect(partial(self.clb_set_dispenser_2k_tip, self.dispenser_2k_tip_combobox))
-        self.dispenser_2k_tip_combobox.setFixedWidth(self.MIN_COMB_WIDTH)
-        
-        # gonio left combobox
-        self.gonio_left_combobox = QComboBox()
-        self.gonio_left_combobox.addItems(self.pm_robot_config.gonio_left.get_available_chucks())
-        self.gonio_left_combobox.setCurrentText(self.pm_robot_config.gonio_left.get_current_chuck())
-        self.gonio_left_combobox.currentTextChanged.connect(partial(self.clb_gonio_combobox_change, 
-                                                                    self.gonio_left_combobox, 
-                                                                    self.pm_robot_config.gonio_left))
-        self.gonio_left_combobox.setFixedWidth(self.MIN_COMB_WIDTH)
+    def _set_confocal_sensor_head(self, config_name):
+        if config_name:
+            self.pm_robot_config.confocal_sensor_head.set_current_config(
+                config_name
+            )
 
-        # gonio right combobox
-        self.gonio_right_combobox = QComboBox()
-        self.gonio_right_combobox.addItems(self.pm_robot_config.gonio_right.get_available_chucks())
-        self.gonio_right_combobox.setCurrentText(self.pm_robot_config.gonio_right.get_current_chuck())
-        self.gonio_right_combobox.currentTextChanged.connect(partial(self.clb_gonio_combobox_change, 
-                                                                     self.gonio_right_combobox, 
-                                                                     self.pm_robot_config.gonio_right))
-        self.gonio_right_combobox.setFixedWidth(self.MIN_COMB_WIDTH)
+    def _set_station_chuck(self, station_key, chuck):
+        if chuck:
+            self._station(station_key).set_current_chuck(chuck)
 
-        # smarpod combobox
-        self.smarpod_combobox = QComboBox()
-        self.smarpod_combobox.addItems(self.pm_robot_config.smarpod_station.get_available_chucks())
-        self.smarpod_combobox.setCurrentText(self.pm_robot_config.smarpod_station.get_current_chuck())
-        self.smarpod_combobox.currentTextChanged.connect(partial(self.clb_gonio_combobox_change, 
-                                                                 self.smarpod_combobox, 
-                                                                 self.pm_robot_config.smarpod_station))
-        self.smarpod_combobox.setFixedWidth(self.MIN_COMB_WIDTH)
+    def _set_smarpod_chuck_center(self, chuck):
+        if chuck:
+            self.pm_robot_config.smarpod_station.set_current_chuck_center(chuck)
 
-        self.smarpod_combobox_chuck_center = QComboBox()
-        self.smarpod_combobox_chuck_center.addItems(self.pm_robot_config.smarpod_station.get_available_chucks_center())
-        self.smarpod_combobox_chuck_center.setCurrentText(self.pm_robot_config.smarpod_station.get_current_chuck_center())
-        self.smarpod_combobox_chuck_center.currentTextChanged.connect(partial(self.clb_gonio_combobox_change_center,
-                                                                              self.smarpod_combobox_chuck_center,
-                                                                                self.pm_robot_config.smarpod_station))
-        
-        CHECKBOX_STYLE = "QCheckBox::indicator { width: 20px; height: 20px; }"
-
-        self.box_activate_vacuum.setStyleSheet(CHECKBOX_STYLE)
-        self.box_activate_gripper_1_jaw.setStyleSheet(CHECKBOX_STYLE)
-        self.box_activate_gripper_2_jaw.setStyleSheet(CHECKBOX_STYLE)
-        self.box_activate_gonio_left.setStyleSheet(CHECKBOX_STYLE)
-        self.box_activate_gonio_right.setStyleSheet(CHECKBOX_STYLE)
-        self.box_activate_smarpod.setStyleSheet(CHECKBOX_STYLE)
-
-        # Add everything to the main layout
-        
-        # Header style: bold and larger font size
-        header_style = "font-weight: bold; font-size: 14pt;"
-        
-        # Regular label style (for tools and attachments)
-        regular_style = "font-size: 10pt;"
-
-        # --- Section: Vacuum Gripper ---
-
-        vacuum_gripper_label = QLabel("<b>Vacuum Gripper Settings</b>")
-        vacuum_gripper_label.setStyleSheet(header_style)  # Apply header style
-        main_layout.addWidget(vacuum_gripper_label, 2, 0, 1, 4)  # Header with bold and bigger font
-
-        activate_vacuum_label = QLabel("<b>Activation:</b>")
-        activate_vacuum_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(activate_vacuum_label, 3, 0)  # Regular label
-        main_layout.addWidget(self.box_activate_vacuum, 3, 1)  # Checkbox for activation
-
-        
-        tools_label = QLabel("<b>Tools:</b>")
-        tools_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(tools_label, 3, 2)  # Regular label
-        main_layout.addWidget(self.vacuum_tool_combobox, 3, 3)
-        
-        attachments_label = QLabel("<b>Attachments:</b>")
-        attachments_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(attachments_label, 3, 4)  # Regular label
-        main_layout.addWidget(self.vacuum_tip_combobox, 3, 5)
-
-
-        # --- Section: Gripper 1 Jaw ---
-        gripper1_label = QLabel("<b>Gripper 1 Jaw Settings</b>")
-        gripper1_label.setStyleSheet(header_style)  # Apply header style
-        main_layout.addWidget(gripper1_label, 4, 0, 1, 4)  # Header with bold and bigger font
-        
-        activate_gripper1_label = QLabel("<b>Activation:</b>")
-        activate_gripper1_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(activate_gripper1_label, 5, 0)  # Regular label
-        main_layout.addWidget(self.box_activate_gripper_1_jaw, 5, 1)  # Checkbox for activation
-        
-        
-        tools_label = QLabel("<b>Tools:</b>")
-        tools_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(tools_label, 5, 2)  # Regular label
-        main_layout.addWidget(self.gripper_1_jaw_combobox, 5, 3)
-        
-        attachments_label = QLabel("<b>Attachments:</b>")
-        attachments_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(attachments_label, 5, 4)  # Regular label
-        main_layout.addWidget(self.gripper_1_jaw_tip_combobox, 5, 5)
-
-        # --- Section: Gripper 2 Jaw ---
-        gripper2_label = QLabel("<b>Gripper 2 Jaw Settings</b>")
-        gripper2_label.setStyleSheet(header_style)  # Apply header style
-        main_layout.addWidget(gripper2_label, 6, 0, 1, 4)  # Header with bold and bigger font
-        
-        activate_gripper2_label = QLabel("<b>Activation:</b>")
-        activate_gripper2_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(activate_gripper2_label, 7, 0)  # Regular label
-        main_layout.addWidget(self.box_activate_gripper_2_jaw, 7, 1)  # Checkbox for activation
-        
-        tools_label = QLabel("<b>Tools:</b>")
-        tools_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(tools_label, 7, 2)  # Regular label
-        main_layout.addWidget(self.gripper_2_jaw_combobox, 7, 3)
-        
-        attachments_label = QLabel("<b>Attachments:</b>")
-        attachments_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(attachments_label, 7, 4)  # Regular label
-        main_layout.addWidget(self.gripper_2_jaw_tip_combobox, 7, 5)
-
-        # --- Section: Dispenser Tip ---
-        dispenser_label = QLabel("<b>Dispenser Tip Settings</b>")
-        dispenser_label.setStyleSheet(header_style)  # Apply header style
-        main_layout.addWidget(dispenser_label, 8, 0, 1, 4)  # Header with bold and bigger font
-
-        attachments_label = QLabel("<b>Attachments:</b>")
-        attachments_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(attachments_label, 9, 0)  # Regular label
-        main_layout.addWidget(self.dispenser_tip_combobox, 9, 1)
-
-        # --- Section: Dispenser 2K Tip ---
-        dispenser_2k_label = QLabel("<b>Dispenser 2K Tip Settings</b>")
-        dispenser_2k_label.setStyleSheet(header_style)  # Apply header style
-        main_layout.addWidget(dispenser_2k_label, 10, 0, 1, 4)  # Header with bold and bigger font
-
-        attachments_2k_label = QLabel("<b>Attachments:</b>")
-        attachments_2k_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(attachments_2k_label, 11, 0)  # Regular label
-        main_layout.addWidget(self.dispenser_2k_tip_combobox, 11, 1)
-
-        # --- Section: Gonio Left ---
-        gonio_left_label = QLabel("<b>Gonio Left Settings</b>")
-        gonio_left_label.setStyleSheet(header_style)  # Apply header style
-        activate_gonio_left_label = QLabel("<b>Activation:</b>")
-        activate_gonio_left_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(gonio_left_label, 12, 0, 1, 4)  # Header with bold and bigger font
-        main_layout.addWidget(activate_gonio_left_label, 13, 0)  # Regular label
-        main_layout.addWidget(self.box_activate_gonio_left, 13, 1)  # Checkbox for activation
-        chucks_label = QLabel("<b>Chucks:</b>")
-        chucks_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(chucks_label, 13, 4)  # Regular label
-        main_layout.addWidget(self.gonio_left_combobox, 13, 5)
-
-        # --- Section: Gonio Right ---
-        gonio_right_label = QLabel("<b>Gonio Right Settings</b>")
-        gonio_right_label.setStyleSheet(header_style)  # Apply header style
-        activate_gonio_right_label = QLabel("<b>Activation:</b>")
-        activate_gonio_right_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(gonio_right_label, 14, 0, 1, 4)  # Header with bold and bigger font
-        main_layout.addWidget(activate_gonio_right_label, 15, 0)  # Regular label
-        main_layout.addWidget(self.box_activate_gonio_right, 15, 1)  # Checkbox for activation
-        chucks_label = QLabel("<b>Chucks:</b>")
-        chucks_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(chucks_label, 15, 4)  # Regular label
-        main_layout.addWidget(self.gonio_right_combobox, 15, 5)
-
-        # --- Section: Smarpod ---
-        smarpod_label = QLabel("<b>Smarpod Settings</b>")
-        smarpod_label.setStyleSheet(header_style)  # Apply header style
-        activate_smarpod_label = QLabel("<b>Activation:</b>")
-        activate_smarpod_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(smarpod_label, 16, 0, 1, 4)  # Header with bold and bigger font
-        main_layout.addWidget(activate_smarpod_label, 17, 0)  # Regular label
-        main_layout.addWidget(self.box_activate_smarpod, 17, 1)  # Checkbox for activation
-        chucks_label = QLabel("<b>Chucks:</b>")
-        chucks_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(chucks_label, 17, 4)  # Regular label
-        main_layout.addWidget(self.smarpod_combobox, 17, 5)
-
-        chuck_center_label = QLabel("<b>Chuck Center:</b>")
-        chuck_center_label.setStyleSheet(regular_style)  # Apply regular label style
-        main_layout.addWidget(chuck_center_label, 18, 4)  # Regular label
-        main_layout.addWidget(self.smarpod_combobox_chuck_center, 18, 5)
-
-        # Spacer and Save Button
-        main_layout.addItem(QSpacerItem(20, 20, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
-        save_button = QPushButton("Save Config")
-        save_button.setStyleSheet("padding: 8px 16px; font-weight: bold;")
-        save_button.clicked.connect(self.save_config)
-        main_layout.addWidget(save_button, 19, 0, 1, 6)
-        reload_button = QPushButton("Reload Config")
-        reload_button.setStyleSheet("padding: 8px 16px; font-weight: bold;")
-        reload_button.clicked.connect(self.reload_config)
-        main_layout.addWidget(reload_button, 20, 0, 1, 6)
-
-        # Apply layout
-        self.central_widget.setLayout(main_layout)
-        self.setWindowTitle('PM Robot Configurator')
-        self.setGeometry(100, 100, 1000, 600)
-
-    def clb_gripper_checkbox_change(self, box_widget:QCheckBox, obj:Union[VacuumGripperConfig, ParallelGripperConfig]):
-        if not box_widget.isChecked():
-            box_widget.setChecked(True)
+    def _set_active_tool(self, tool_key, checked):
+        selected_tool = self._tool(tool_key)
+        if not checked:
+            selected_tool.activate()
+            self._refresh_tool_controls()
             return
-        
-        self.deactivate_grippers()
-        obj.activate()
-        self.refresh_gripper_checkboxes()
 
-    def deactivate_grippers(self):
-        self.pm_robot_config.tool._gripper_vacuum.deactivate()
-        self.pm_robot_config.tool._gripper_1_jaw.deactivate()
-        self.pm_robot_config.tool._gripper_2_jaw.deactivate()
+        for key in ('vacuum', 'gripper_1', 'gripper_2'):
+            self._tool(key).deactivate()
+        selected_tool.activate()
+        self._refresh_tool_controls()
 
-    def clb_gonio_checkbox_change(self, box_widget:QCheckBox, gonio:GonioConfig):
-        if not box_widget.isChecked():
-            gonio.deactivate()
-        else:
-            gonio.activate()
-        
+    def _tool_changed(self, tool_key, tool_name):
+        if not tool_name:
+            return
+        tool = self._tool(tool_key)
+        tool.set_current_tool(tool=tool_name)
+        attachments = tool.get_current_extension_list()
+        attachment = attachments[0] if attachments else ''
+        tool.set_current_tool(ext=attachment)
+        self._refresh_attachment_combo(tool_key)
 
-    def clb_tool_gripper_combobox_change(self, combobox:QComboBox, combobox_tip: QComboBox ,obj:Union[VacuumGripperConfig, ParallelGripperConfig]):
-        obj.set_current_tool(tool=combobox.currentText())
-        obj.set_current_tool(ext=obj.get_first_extension_for_current_tool())
-        combobox_tip.clear()
-        combobox_tip.addItems(obj.get_current_extension_list())
-        combobox_tip.setCurrentText(obj.get_first_extension_for_current_tool())
+    def _attachment_changed(self, tool_key, attachment):
+        if attachment:
+            self._tool(tool_key).set_current_tool(ext=attachment)
 
-    def clb_tip_gripper_combobox_change(self, combobox_tip: QComboBox ,obj:Union[VacuumGripperConfig, ParallelGripperConfig]):
-        obj.set_current_tool(ext=combobox_tip.currentText())
+    def _set_station_active(self, station_key, checked):
+        station = self._station(station_key)
+        station.activate() if checked else station.deactivate()
 
-    def clb_gonio_combobox_change(self, combobox:QComboBox, gonio:GonioConfig):
-        gonio.set_current_chuck(combobox.currentText())
+    def _set_measurement_enabled(self, key, checked):
+        self.pm_robot_config._config_data['measuring_systems'][key] = checked
 
-    def clb_gonio_combobox_change_center(self, combobox:QComboBox, gonio:GonioConfig):
-        gonio.set_current_chuck_center(combobox.currentText())
+    @staticmethod
+    def _set_combo_items(combo, items, current):
+        with QSignalBlocker(combo):
+            combo.clear()
+            combo.addItems([str(item) for item in items])
+            combo.setCurrentText(str(current) if current is not None else '')
 
-    def clb_set_dispenser_tip(self, combobox: QComboBox):
-        self.pm_robot_config.dispenser_1k.set_currrent_dispenser_tip(combobox.currentText())
+    @staticmethod
+    def _set_checked(checkbox, checked):
+        with QSignalBlocker(checkbox):
+            checkbox.setChecked(bool(checked))
 
-    def clb_set_dispenser_2k_tip(self, combobox: QComboBox):
-        self.pm_robot_config.dispenser_2k.set_currrent_dispenser_tip(combobox.currentText())
-    
-    def refresh_gripper_checkboxes(self):
-        self.box_activate_vacuum.setChecked(self.pm_robot_config.tool._gripper_vacuum.get_activate_status())
-        self.box_activate_gripper_1_jaw.setChecked(self.pm_robot_config.tool._gripper_1_jaw.get_activate_status())
-        self.box_activate_gripper_2_jaw.setChecked(self.pm_robot_config.tool._gripper_2_jaw.get_activate_status())
+    def _refresh_attachment_combo(self, tool_key):
+        combo = {
+            'vacuum': self.vacuum_tip_combobox,
+            'gripper_1': self.gripper_1_jaw_tip_combobox,
+            'gripper_2': self.gripper_2_jaw_tip_combobox,
+        }[tool_key]
+        tool = self._tool(tool_key)
+        self._set_combo_items(
+            combo,
+            tool.get_current_extension_list(),
+            tool.get_current_tool_attachment(),
+        )
+
+    def _refresh_tool_controls(self):
+        controls = {
+            'vacuum': (
+                self.box_activate_vacuum,
+                self.vacuum_tool_combobox,
+            ),
+            'gripper_1': (
+                self.box_activate_gripper_1_jaw,
+                self.gripper_1_jaw_combobox,
+            ),
+            'gripper_2': (
+                self.box_activate_gripper_2_jaw,
+                self.gripper_2_jaw_combobox,
+            ),
+        }
+        for key, (checkbox, combo) in controls.items():
+            tool = self._tool(key)
+            self._set_checked(checkbox, tool.get_activate_status())
+            self._set_combo_items(
+                combo,
+                [item[0] for item in tool.get_available_tools()],
+                tool.get_current_tool(),
+            )
+            self._refresh_attachment_combo(key)
+
+    def refresh_ui(self):
+        self._refresh_tool_controls()
+
+        self._set_combo_items(
+            self.dispenser_tip_combobox,
+            self.pm_robot_config.dispenser_1k.get_available_dispenser_tips(),
+            self.pm_robot_config.dispenser_1k.get_current_dispenser_tip(),
+        )
+        self._set_combo_items(
+            self.dispenser_2k_tip_combobox,
+            self.pm_robot_config.dispenser_2k.get_available_dispenser_tips(),
+            self.pm_robot_config.dispenser_2k.get_current_dispenser_tip(),
+        )
+        self._set_combo_items(
+            self.confocal_sensor_head_combobox,
+            self.pm_robot_config.confocal_sensor_head.get_available_configs(),
+            self.pm_robot_config.confocal_sensor_head.get_current_config(),
+        )
+
+        station_controls = (
+            (self.pm_robot_config.gonio_left,
+             self.box_activate_gonio_left, self.gonio_left_combobox),
+            (self.pm_robot_config.gonio_right,
+             self.box_activate_gonio_right, self.gonio_right_combobox),
+            (self.pm_robot_config.smarpod_station,
+             self.box_activate_smarpod, self.smarpod_combobox),
+        )
+        for station, checkbox, combo in station_controls:
+            self._set_checked(checkbox, station.get_activate_status())
+            self._set_combo_items(
+                combo,
+                station.get_available_chucks(),
+                station.get_current_chuck(),
+            )
+
+        smarpod = self.pm_robot_config.smarpod_station
+        self._set_combo_items(
+            self.smarpod_combobox_chuck_center,
+            smarpod.get_available_chucks_center(),
+            smarpod.get_current_chuck_center(),
+        )
+
+        measuring = self.pm_robot_config._config_data['measuring_systems']
+        self._set_checked(
+            self.use_confocal_head_checkbox,
+            measuring.get('use_confocal_head', False),
+        )
+        self._set_checked(
+            self.use_confocal_bottom_checkbox,
+            measuring.get('use_confocal_bottom', False),
+        )
+        self._set_checked(
+            self.use_keyence_bottom_checkbox,
+            measuring.get('use_keyence_bottom', False),
+        )
+
+        self.config_path_label.setText(
+            'File: ' + self.pm_robot_config.get_active_bringup_config_path()
+        )
 
     def save_config(self):
-        self.pm_robot_config.save_config()
-    
-    def set_sim_mode(self):
-        """Switch to simulation hardware mode."""
         try:
-            # Set the mode to UNITY_MODE (simulation)
-            self.pm_robot_config.set_to_sim_HW()
-            self.node.get_logger().info("Switched to Simulation Mode")
-            self.reload_config()  # Reload config to update UI with simulation settings
-            self.update_mode_buttons(set_to_real_hw=False)
-            self.set_config_mode_label("SIMULATION")
-        except Exception as e:
-            self.node.get_logger().warning(f"Failed to switch to Simulation Mode: {e}")
-    
-    def set_real_mode(self):
-        """Switch to real hardware mode."""
-        try:
-            # Set the mode to REAL_MODE
-            self.pm_robot_config.set_to_real_HW()
-            self.node.get_logger().info("Switched to Real Hardware Mode")
-            self.reload_config()  # Reload config to update UI with real hardware settings
-            self.update_mode_buttons(set_to_real_hw=True)
-            self.set_config_mode_label("REAL_HARDWARE")
-        except Exception as e:
-            self.node.get_logger().warning(f"Failed to switch to Real Hardware Mode: {e}")
-    
-    def auto_detect_mode(self):
-        """Auto-detect current mode and update the configuration."""
-        try:
-            current_mode = self._pm_robot_utils.get_mode()
-
-            if current_mode == self._pm_robot_utils.UNITY_MODE:
-                mode_text = "UNITY_MODE"
-                self.set_sim_mode()
-                self.node.get_logger().info("Auto-detect mode: Unity detected, switched to Simulation Mode in config.")
-            elif current_mode == self._pm_robot_utils.REAL_MODE:
-                mode_text = "REAL_HARDWARE"
-                self.set_real_mode()
-                self.node.get_logger().info("Auto-detect mode: Real Hardware detected, switched to Real Hardware Mode in config.")
-            elif current_mode == self._pm_robot_utils.GAZEBO_MODE:
-                mode_text = "GAZEBO_MODE"
-                self.set_sim_mode()  # Assuming Gazebo should be treated as simulation for config purposes
-                self.node.get_logger().info("Auto-detect mode: Gazebo detected, treating as Simulation Mode in config.")
-            else:
-                mode_text = "UNKNOWN"
-                self.set_sim_mode()  # Default to simulation if unknown
-                self.node.get_logger().warning(f"Auto-detect mode returned unknown mode '{current_mode}', defaulting to Simulation Mode.")
-        
-        except Exception as e:
-            self.config_mode_label.setText(f"Configuration Mode: ERROR")
-            self.node.get_logger().warning(f"Failed to update configuration mode label: {e}")
-
-    def update_mode_buttons(self, set_to_real_hw:bool=False):
-        """Update the visual state of mode buttons to show which one is active."""
-        
-        # Define button styles
-        active_style = "background-color: #4CAF50; color: white; font-weight: bold; padding: 8px 12px; border-radius: 3px; border: 2px solid #2E7D32;"
-        inactive_style = "background-color: #e0e0e0; color: black; padding: 8px 12px; border-radius: 3px; border: 1px solid #999;"
-        
-        # Reset all buttons to inactive
-        self.sim_hw_button.setStyleSheet(inactive_style)
-        self.real_hw_button.setStyleSheet(inactive_style)
-        self.auto_detect_button.setStyleSheet(inactive_style)
-        
-        # Highlight the active button based on current mode
-        if set_to_real_hw:
-            self.real_hw_button.setStyleSheet(active_style)
-        else:
-            self.sim_hw_button.setStyleSheet(active_style)
-
-    
-    def _disconnect_signals(self):
-        """Disconnect all signals from widgets."""
-        # Checkbox signals
-        self.box_activate_vacuum.clicked.disconnect()
-        self.box_activate_gripper_1_jaw.clicked.disconnect()
-        self.box_activate_gripper_2_jaw.clicked.disconnect()
-        self.box_activate_gonio_left.clicked.disconnect()
-        self.box_activate_gonio_right.clicked.disconnect()
-        self.box_activate_smarpod.clicked.disconnect()
-        
-        # Combobox signals
-        self.vacuum_tool_combobox.currentTextChanged.disconnect()
-        self.vacuum_tip_combobox.currentTextChanged.disconnect()
-        self.gripper_1_jaw_combobox.currentTextChanged.disconnect()
-        self.gripper_1_jaw_tip_combobox.currentTextChanged.disconnect()
-        self.gripper_2_jaw_combobox.currentTextChanged.disconnect()
-        self.gripper_2_jaw_tip_combobox.currentTextChanged.disconnect()
-        self.dispenser_tip_combobox.currentTextChanged.disconnect()
-        self.dispenser_2k_tip_combobox.currentTextChanged.disconnect()
-        self.gonio_left_combobox.currentTextChanged.disconnect()
-        self.gonio_right_combobox.currentTextChanged.disconnect()
-        self.smarpod_combobox.currentTextChanged.disconnect()
-        self.smarpod_combobox_chuck_center.currentTextChanged.disconnect()
-    
-    def _reconnect_signals(self):
-        """Reconnect all signals to the current config objects."""
-        # Checkbox signals
-        self.box_activate_vacuum.clicked.connect(partial(self.clb_gripper_checkbox_change, self.box_activate_vacuum, self.pm_robot_config.tool._gripper_vacuum))
-        self.box_activate_gripper_1_jaw.clicked.connect(partial(self.clb_gripper_checkbox_change, self.box_activate_gripper_1_jaw, self.pm_robot_config.tool._gripper_1_jaw))
-        self.box_activate_gripper_2_jaw.clicked.connect(partial(self.clb_gripper_checkbox_change, self.box_activate_gripper_2_jaw, self.pm_robot_config.tool._gripper_2_jaw))
-        self.box_activate_gonio_left.clicked.connect(partial(self.clb_gonio_checkbox_change, self.box_activate_gonio_left, self.pm_robot_config.gonio_left))
-        self.box_activate_gonio_right.clicked.connect(partial(self.clb_gonio_checkbox_change, self.box_activate_gonio_right, self.pm_robot_config.gonio_right))
-        self.box_activate_smarpod.clicked.connect(partial(self.clb_gonio_checkbox_change, self.box_activate_smarpod, self.pm_robot_config.smarpod_station))
-        
-        # Combobox signals
-        self.vacuum_tool_combobox.currentTextChanged.connect(partial(self.clb_tool_gripper_combobox_change, self.vacuum_tool_combobox, self.vacuum_tip_combobox, self.pm_robot_config.tool._gripper_vacuum))
-        self.vacuum_tip_combobox.currentTextChanged.connect(partial(self.clb_tip_gripper_combobox_change, self.vacuum_tip_combobox, self.pm_robot_config.tool._gripper_vacuum))
-        self.gripper_1_jaw_combobox.currentTextChanged.connect(partial(self.clb_tool_gripper_combobox_change, self.gripper_1_jaw_combobox, self.gripper_1_jaw_tip_combobox, self.pm_robot_config.tool._gripper_1_jaw))
-        self.gripper_1_jaw_tip_combobox.currentTextChanged.connect(partial(self.clb_tip_gripper_combobox_change, self.gripper_1_jaw_tip_combobox, self.pm_robot_config.tool._gripper_1_jaw))
-        self.gripper_2_jaw_combobox.currentTextChanged.connect(partial(self.clb_tool_gripper_combobox_change, self.gripper_2_jaw_combobox, self.gripper_2_jaw_tip_combobox, self.pm_robot_config.tool._gripper_2_jaw))
-        self.gripper_2_jaw_tip_combobox.currentTextChanged.connect(partial(self.clb_tip_gripper_combobox_change, self.gripper_2_jaw_tip_combobox, self.pm_robot_config.tool._gripper_2_jaw))
-        self.dispenser_tip_combobox.currentTextChanged.connect(partial(self.clb_set_dispenser_tip, self.dispenser_tip_combobox))
-        self.dispenser_2k_tip_combobox.currentTextChanged.connect(partial(self.clb_set_dispenser_2k_tip, self.dispenser_2k_tip_combobox))
-        self.gonio_left_combobox.currentTextChanged.connect(partial(self.clb_gonio_combobox_change, self.gonio_left_combobox, self.pm_robot_config.gonio_left))
-        self.gonio_right_combobox.currentTextChanged.connect(partial(self.clb_gonio_combobox_change, self.gonio_right_combobox, self.pm_robot_config.gonio_right))
-        self.smarpod_combobox.currentTextChanged.connect(partial(self.clb_gonio_combobox_change, self.smarpod_combobox, self.pm_robot_config.smarpod_station))
-        self.smarpod_combobox_chuck_center.currentTextChanged.connect(partial(self.clb_gonio_combobox_change_center, self.smarpod_combobox_chuck_center, self.pm_robot_config.smarpod_station))
-        
-    def set_config_mode_label(self, mode_text:str):
-        self.config_mode_label.setText(f"Configuration Mode: {mode_text}")
-        self.config_mode_label.setToolTip(f"Path: {self.pm_robot_config.get_active_bringup_config_path()}")
+            self.pm_robot_config.save_config()
+            QMessageBox.information(
+                self,
+                'Configuration saved',
+                'The active bringup configuration was saved successfully.',
+            )
+        except OSError as error:
+            QMessageBox.critical(self, 'Could not save configuration', str(error))
 
     def reload_config(self):
-        self._disconnect_signals()
-        self.pm_robot_config.reload_config()
+        try:
+            self.pm_robot_config.reload_config()
+            self.refresh_ui()
+        except Exception as error:
+            QMessageBox.critical(
+                self,
+                'Could not reload configuration',
+                str(error),
+            )
 
-        # Refresh smarpod comboboxes with available items BEFORE reconnecting signals.
-        # Otherwise the auto-select-first-item behavior after addItems() would
-        # fire currentTextChanged and overwrite the in-memory use_chuck /
-        # use_chuck_center values with the first available item (e.g. "empty"),
-        # effectively reverting the saved configuration to defaults.
-        self.smarpod_combobox.clear()
-        self.smarpod_combobox.addItems(self.pm_robot_config.smarpod_station.get_available_chucks())
-        self.smarpod_combobox.setCurrentText(self.pm_robot_config.smarpod_station.get_current_chuck())
+    def create_config_file(self):
+        dialog = ConfigurationRequirementDialog(
+            self.pm_robot_config.get_config_data(),
+            self,
+        )
+        dialog.exec()
 
-        self.smarpod_combobox_chuck_center.clear()
-        self.smarpod_combobox_chuck_center.addItems(self.pm_robot_config.smarpod_station.get_available_chucks_center())
-        self.smarpod_combobox_chuck_center.setCurrentText(self.pm_robot_config.smarpod_station.get_current_chuck_center())
+    def load_config_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            'Load PM robot configuration',
+            str(Path.cwd()),
+            'YAML files (*.yaml *.yml)',
+        )
+        if not file_path:
+            return
 
-        self._reconnect_signals()
-        self.refresh_gripper_checkboxes()
-        self.box_activate_gonio_left.setChecked(self.pm_robot_config.gonio_left.get_activate_status())
-        self.box_activate_gonio_right.setChecked(self.pm_robot_config.gonio_right.get_activate_status())
-        self.box_activate_smarpod.setChecked(self.pm_robot_config.smarpod_station.get_activate_status())
-        self.vacuum_tool_combobox.setCurrentText(self.pm_robot_config.tool._gripper_vacuum.get_current_tool())
-        self.vacuum_tip_combobox.setCurrentText(self.pm_robot_config.tool._gripper_vacuum.get_current_tool_attachment())
-        self.gripper_1_jaw_combobox.setCurrentText(self.pm_robot_config.tool._gripper_1_jaw.get_current_tool())
-        self.gripper_1_jaw_tip_combobox.setCurrentText(self.pm_robot_config.tool._gripper_1_jaw.get_current_tool_attachment())
-        self.gripper_2_jaw_combobox.setCurrentText(self.pm_robot_config.tool._gripper_2_jaw.get_current_tool())
-        self.gripper_2_jaw_tip_combobox.setCurrentText(self.pm_robot_config.tool._gripper_2_jaw.get_current_tool_attachment())
-        self.dispenser_tip_combobox.setCurrentText(self.pm_robot_config.dispenser_1k.get_current_dispenser_tip())
-        self.dispenser_2k_tip_combobox.setCurrentText(self.pm_robot_config.dispenser_2k.get_current_dispenser_tip())
-        self.gonio_left_combobox.setCurrentText(self.pm_robot_config.gonio_left.get_current_chuck())
-        self.gonio_right_combobox.setCurrentText(self.pm_robot_config.gonio_right.get_current_chuck())
+        try:
+            with Path(file_path).open('r', encoding='utf-8') as input_file:
+                loaded_config = yaml.safe_load(input_file)
+            if not isinstance(loaded_config, dict) or not loaded_config:
+                raise ValueError(
+                    'The loaded configuration must be a non-empty YAML '
+                    'mapping.'
+                )
+            self.pm_robot_config.apply_config_data(loaded_config)
+            self.refresh_ui()
+        except (OSError, ValueError, yaml.YAMLError) as error:
+            QMessageBox.critical(
+                self,
+                'Could not load configuration',
+                str(error),
+            )
+            return
 
-        # Smarpod comboboxes were already refreshed while signals were
-        # disconnected above, so we only need to set the current text here
-        # to make sure the in-memory and the UI stay in sync without
-        # triggering the change handlers.
+        QMessageBox.information(
+            self,
+            'Configuration loaded',
+            'The supplied properties were applied to the currently selected '
+            'configuration. Review them in the GUI and click "Save bringup '
+            'config" to write the changes.',
+        )
 
-        #self.node.get_logger().error(f"Text: {self.pm_robot_config.smarpod_station.get_available_chucks_center()}")
+    def set_sim_mode(self):
+        self._switch_mode(False, 'SIMULATION')
+
+    def set_real_mode(self):
+        self._switch_mode(True, 'REAL HARDWARE')
+
+    def _switch_mode(self, use_real_config, mode_text):
+        try:
+            self.pm_robot_config.set_real_HW(use_real_config)
+            self.refresh_ui()
+            self._update_mode_display(use_real_config, mode_text)
+        except Exception as error:
+            self.node.get_logger().warning(
+                f'Failed to switch configuration mode: {error}'
+            )
+
+    def auto_detect_mode(self):
+        try:
+            mode = self._pm_robot_utils.get_mode()
+            use_real_config = mode == self._pm_robot_utils.REAL_MODE
+            if mode == self._pm_robot_utils.REAL_MODE:
+                mode_text = 'REAL HARDWARE (AUTO)'
+            elif mode == self._pm_robot_utils.UNITY_MODE:
+                mode_text = 'UNITY / SIMULATION (AUTO)'
+            elif mode == self._pm_robot_utils.GAZEBO_MODE:
+                mode_text = 'GAZEBO / SIMULATION (AUTO)'
+            else:
+                mode_text = 'SIMULATION (AUTO FALLBACK)'
+
+            self.pm_robot_config.set_real_HW(use_real_config)
+            self.refresh_ui()
+            self._update_mode_display(use_real_config, mode_text)
+        except Exception as error:
+            self.config_mode_label.setText('Configuration mode: ERROR')
+            self.node.get_logger().warning(
+                f'Failed to auto-detect configuration mode: {error}'
+            )
+
+    def _update_mode_display(self, use_real_config, mode_text):
+        active_style = (
+            'background-color: #2e7d32; color: white; font-weight: bold;'
+        )
+        inactive_style = ''
+        self.real_hw_button.setStyleSheet(
+            active_style if use_real_config else inactive_style
+        )
+        self.sim_hw_button.setStyleSheet(
+            inactive_style if use_real_config else active_style
+        )
+        self.config_mode_label.setText(f'Configuration mode: {mode_text}')
+
 
 class DummyMain(QMainWindow):
+    """Small standalone shell retained for manual widget development."""
 
     def __init__(self):
         super().__init__()
-        self.w = None  # No external window yet.
-        self.button = QPushButton("Push for Window")
-        self.button.clicked.connect(self.show_new_window)
-        self.setCentralWidget(self.button)
-
-    def show_new_window(self, checked):
-        if self.w is None:
-            self.w = PmRobotConfigWidget()
-        self.w.show()
+        self.setWindowTitle('PM Robot Configurator')
 
 
 def main():
     app = QApplication(sys.argv)
-    ex = DummyMain()
-    ex.show()
+    window = DummyMain()
+    window.show()
     sys.exit(app.exec())
+
 
 if __name__ == '__main__':
     main()
