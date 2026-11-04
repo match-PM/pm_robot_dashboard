@@ -1,0 +1,85 @@
+tmux_session: pm_robot_dashboard
+tmux_window_prefix: launches
+tmux_panes_per_window: 8
+tmux_grid_width: 240
+tmux_grid_height: 80
+ros_setup: >
+  source /opt/ros/humble/setup.bash &&
+  source ~/pm_ros2_ws/install/setup.bash &&
+  source ~/Documents/ros2-for-unity/install/setup.bash
+
+launch_files:
+  - slug: assembly_manager
+    label: Assembly Manager
+    window: assembly_manager
+    command: ros2 launch assembly_manager assembly_manager.launch.py
+    description: Launch assembly manager
+
+  - slug: real_hw
+    label: Real HW
+    window: real_hw
+    package: pm_robot_bringup
+    launch_file: pm_robot_real_HW.launch.py
+    description: Launch real hardware setup
+
+  - slug: sim_hw
+    label: Simulation HW
+    window: sim_hw
+    package: pm_robot_bringup
+    launch_file: pm_robot_sim_HW.launch.py
+    description: Launch Gazebo simulation setup
+
+  - slug: unity_hw
+    label: Unity HW
+    window: unity_hw
+    package: pm_robot_bringup
+    launch_file: pm_robot_unity_HW.launch.py
+    description: Launch Unity simulation setup
+
+  - slug: unity_opcua
+    label: Unity OPC UA
+    window: unity_opcua
+    command: ros2 run opcua_server opcua_server
+    description: Run OPC UA server for Unity
+
+  - slug: cameras_top
+    label: Cameras Top
+    window: cameras_top
+    command: ros2 launch pm_robot_cameras ros2_cam_top_view.launch.py
+    description: Launch top-view camera
+
+  - slug: cameras_bottom
+    label: Cameras Bottom
+    window: cameras_bottom
+    command: ros2 launch pm_robot_cameras ros2_cam_bottom_view.launch.py
+    description: Launch bottom-view camera
+
+  - slug: robot_skills
+    label: Robot Skills
+    window: robot_skills
+    command: ros2 launch pm_launch_skills pm_skills.launch.py
+    description: Launch robot skills
+
+  - slug: vision_manager
+    label: Vision Manager
+    window: vision_manager
+    command: ros2 launch pm_vision_manager pm_vision.launch.py
+    description: Launch vision manager
+
+  - slug: rsap
+    label: RSAP
+    window: rsap
+    command: ros2 launch ros_sequential_action_programmer rsap_app.launch.py
+    description: Launch sequential action programmer
+
+  - slug: cameras_genicam
+    label: Cameras GenICam
+    window: cameras_genicam
+    command: ros2 launch pm_genicam_controller camera.launch.py
+    description: Launch GenICam camera controller
+
+  - slug: smaract_gripper
+    label: SmarAct Gripper
+    window: smaract_gripper
+    command: ros2 run pm_smaract_gripper gripper
+    description: Run SmarAct gripper

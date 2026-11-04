@@ -14,10 +14,12 @@ from pm_robot_dashboard.joints import JointsControlWidget
 from pm_robot_dashboard.ik_control import IkControlWidget
 from pm_robot_dashboard.pm_robot_config import PmRobotConfigWidget
 from pm_robot_dashboard.launch_control import LaunchControlWidget
+from pm_robot_dashboard.launch_control_tmux import TmuxLaunchControlWidget
 from pm_robot_dashboard.pm_robot_tool_changer import ToolChangerService
 from pm_robot_dashboard.calibration_panel import GraphView
 from pm_robot_dashboard.calibration_log_widget import CalibrationLogWidget
 from pm_robot_dashboard.joint_calibration_panel import JointCalibrationPanel
+from pm_video_recorder.widget import VideoRecorderWidget
 from rclpy.executors import MultiThreadedExecutor
 from pm_robot_modules.submodules.pm_dispense_path_generator_app import DispenserBuilderWidget
 try:
@@ -73,6 +75,7 @@ class PmJogToolUi(Q.QMainWindow):
         #robot_control_tabs.addTab(IkControlWidget(self, node), "IK")
         robot_control_tabs.addTab(PmRobotConfigWidget(node), "Robot Config")
         robot_control_tabs.addTab(LaunchControlWidget(node, self), "Launch Files")
+        #robot_control_tabs.addTab(TmuxLaunchControlWidget(node, self), "Launch Files tmux")
         robot_control_tabs.addTab(DispenserBuilderWidget(), "2K Dispenser Path Builder")
 
         robot_calibration_tabs = Q.QTabWidget()
@@ -85,6 +88,8 @@ class PmJogToolUi(Q.QMainWindow):
 
         # Create Info Helpers tab with subtabs
         info_helpers_tabs = Q.QTabWidget()
+        self.video_recorder = VideoRecorderWidget(node)
+        info_helpers_tabs.addTab(self.video_recorder, "Video Recorder")
         
         try:
             info_helpers_tabs.addTab(AssemblyScenceViewerWidget(node), "Assembly Scene Viewer")
@@ -107,6 +112,13 @@ class PmJogToolUi(Q.QMainWindow):
         # Set central widget
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
+
+    def closeEvent(self, event):
+        """Protect an active or unsaved video recording on dashboard exit."""
+        if self.video_recorder.shutdown(prompt_to_save=True):
+            event.accept()
+        else:
+            event.ignore()
 
 
 class PmJogToolApp:
