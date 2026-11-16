@@ -1,5 +1,16 @@
 # pm_robot_dashboard
 
+The **Info Helpers → Video Recorder** tab requires the separate
+`pm_video_recorder` ROS package. The dashboard starts without this tab when the
+package is absent and logs a warning. To enable recording, add the package to
+`~/ros2_ws/src`, then build and source the workspace:
+
+```bash
+cd ~/ros2_ws
+colcon build --packages-select pm_video_recorder pm_robot_dashboard
+source install/setup.bash
+```
+
 RSAP log analysis is available under **Info Helpers → RSAP Log Analysis**.
 Import or drag and drop RSAP JSON logs in the Log files tab, or connect to an
 `rsap_interfaces/msg/RsapLogs` topic in the Live topic tab. Select individual

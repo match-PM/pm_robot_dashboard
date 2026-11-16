@@ -20,9 +20,16 @@ from pm_robot_dashboard.calibration_panel import GraphView
 from pm_robot_dashboard.calibration_log_widget import CalibrationLogWidget
 from pm_robot_dashboard.log_analysis_widget import RsapLogAnalysisWidget
 from pm_robot_dashboard.joint_calibration_panel import JointCalibrationPanel
-from pm_video_recorder.widget import VideoRecorderWidget
 from rclpy.executors import MultiThreadedExecutor
 from pm_robot_modules.submodules.pm_dispense_path_generator_app import DispenserBuilderWidget
+
+try:
+    from pm_video_recorder.widget import VideoRecorderWidget
+except ModuleNotFoundError as exc:
+    if exc.name != "pm_video_recorder":
+        raise
+    VideoRecorderWidget = None
+
 try:
     from assembly_scene_viewer.py_modules.AssemblySceneViewer import AssemblyScenceViewerWidget
     from assembly_scene_viewer.py_modules.AssemblyJsonModifier import AssemblyModifierWidget
@@ -89,8 +96,15 @@ class PmJogToolUi(Q.QMainWindow):
 
         # Create Info Helpers tab with subtabs
         info_helpers_tabs = Q.QTabWidget()
-        self.video_recorder = VideoRecorderWidget(node)
-        info_helpers_tabs.addTab(self.video_recorder, "Video Recorder")
+        self.video_recorder = None
+        if VideoRecorderWidget is not None:
+            self.video_recorder = VideoRecorderWidget(node)
+            info_helpers_tabs.addTab(self.video_recorder, "Video Recorder")
+        else:
+            node.get_logger().warning(
+                "Video Recorder is unavailable: pm_video_recorder is not installed. "
+                "Add the package to your workspace, rebuild, and source install/setup.bash."
+            )
         
         try:
             info_helpers_tabs.addTab(AssemblyScenceViewerWidget(node), "Assembly Scene Viewer")
@@ -119,10 +133,9 @@ class PmJogToolUi(Q.QMainWindow):
 
     def closeEvent(self, event):
         """Protect an active or unsaved video recording on dashboard exit."""
-        if self.video_recorder.shutdown(prompt_to_save=True):
-            event.accept()
-        else:
+        if self.video_recorder is not None and not self.video_recorder.shutdown(prompt_to_save=True):
             event.ignore()
+            return
         self.rsap_log_analysis.shutdown()
         super().closeEvent(event)
 
